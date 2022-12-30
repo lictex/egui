@@ -371,6 +371,14 @@ impl Context {
 
     // ---------------------------------------------------------------------
 
+    pub(crate) fn interact_placeholder(&self, layer_id: LayerId, id: Id) {
+        self.write()
+            .layer_rects_this_frame
+            .entry(layer_id)
+            .or_default()
+            .push((id, Rect::NOTHING));
+    }
+
     /// Use `ui.interact` instead
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn interact(
@@ -410,10 +418,14 @@ impl Context {
 
             let mut slf = self.write();
 
-            slf.layer_rects_this_frame
-                .entry(layer_id)
-                .or_default()
-                .push((id, interact_rect));
+            let rects = slf.layer_rects_this_frame.entry(layer_id).or_default();
+            // check for placeholders
+            // if an id already exists, just update it's value
+            if let Some((_, rect)) = rects.iter_mut().find(|(i, _)| *i == id) {
+                *rect = interact_rect;
+            } else {
+                rects.push((id, interact_rect));
+            }
 
             if hovered {
                 let pointer_pos = slf.input.pointer.interact_pos();

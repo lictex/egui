@@ -618,6 +618,12 @@ impl Ui {
         )
     }
 
+    pub fn interact_placeholder(&self) -> Id {
+        let id = self.next_auto_id();
+        self.ctx().interact_placeholder(self.layer_id(), id);
+        id
+    }
+
     /// Check for clicks, and drags on a specific region that is hovered.
     /// This can be used once you have checked that some shape you are painting has been hovered,
     /// and want to check for clicks and drags on hovered items this frame.

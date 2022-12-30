@@ -25,6 +25,7 @@ pub struct Frame {
     pub shadow: Shadow,
     pub fill: Color32,
     pub stroke: Stroke,
+    pub sense: Sense,
 }
 
 impl Frame {
@@ -159,6 +160,12 @@ impl Frame {
         self
     }
 
+    #[inline]
+    pub fn sense(mut self, sense: Sense) -> Self {
+        self.sense = sense;
+        self
+    }
+
     pub fn multiply_with_opacity(mut self, opacity: f32) -> Self {
         self.fill = self.fill.linear_multiply(opacity);
         self.stroke.color = self.stroke.color.linear_multiply(opacity);
@@ -181,6 +188,7 @@ pub struct Prepared {
     pub frame: Frame,
     where_to_put_background: ShapeIdx,
     pub content_ui: Ui,
+    pub id: Id,
 }
 
 impl Frame {
@@ -198,12 +206,15 @@ impl Frame {
 
         let content_ui = ui.child_ui(inner_rect, *ui.layout());
 
+        let id = ui.interact_placeholder();
+
         // content_ui.set_clip_rect(outer_rect_bounds.shrink(self.stroke.width * 0.5)); // Can't do this since we don't know final size yet
 
         Prepared {
             frame: self,
             where_to_put_background,
             content_ui,
+            id,
         }
     }
 
@@ -230,6 +241,7 @@ impl Frame {
             shadow,
             fill,
             stroke,
+            sense: _,
         } = *self;
 
         let frame_shape = Shape::Rect(epaint::RectShape {
@@ -270,6 +282,7 @@ impl Prepared {
         let Prepared {
             frame,
             where_to_put_background,
+            id,
             ..
         } = self;
 
@@ -278,6 +291,8 @@ impl Prepared {
             ui.painter().set(where_to_put_background, shape);
         }
 
-        ui.allocate_rect(self.content_with_margin(), Sense::hover())
+        let rect = self.content_with_margin();
+        ui.advance_cursor_after_rect(rect);
+        ui.interact(rect, id, self.frame.sense)
     }
 }

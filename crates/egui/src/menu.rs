@@ -180,13 +180,18 @@ fn stationary_menu_impl<'c, R>(
 /// Response to secondary clicks (right-clicks) by showing the given menu.
 pub(crate) fn context_menu(
     response: &Response,
-    add_contents: impl FnOnce(&mut Ui),
+    add_contents: impl FnOnce(&mut Ui, Pos2),
 ) -> Option<InnerResponse<()>> {
     let menu_id = Id::new("__egui::context_menu");
     let mut bar_state = BarState::load(&response.ctx, menu_id);
 
     MenuRoot::context_click_interaction(response, &mut bar_state, response.id);
-    let inner_response = bar_state.show(response, add_contents);
+    let pos = bar_state
+        .inner
+        .as_ref()
+        .map(|f| f.menu_state.read().rect.min)
+        .unwrap_or_default();
+    let inner_response = bar_state.show(response, |ui| add_contents(ui, pos));
 
     bar_state.store(&response.ctx, menu_id);
     inner_response
@@ -439,7 +444,8 @@ impl SubMenuButton {
             text_galley.size().x + icon_galley.size().x,
             text_galley.size().y.max(icon_galley.size().y),
         );
-        let desired_size = text_and_icon_size + 2.0 * button_padding;
+        let mut desired_size = text_and_icon_size + 2.0 * button_padding;
+        desired_size.y = desired_size.y.at_least(ui.spacing().interact_size.y);
 
         let (rect, response) = ui.allocate_at_least(desired_size, sense);
         response.widget_info(|| {

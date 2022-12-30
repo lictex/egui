@@ -663,6 +663,10 @@ impl Response {
     ///
     /// See also: [`Ui::menu_button`] and [`Ui::close_menu`].
     pub fn context_menu(self, add_contents: impl FnOnce(&mut Ui)) -> Self {
+        menu::context_menu(&self, |ui, _| add_contents(ui));
+        self
+    }
+    pub fn context_menu_with_pos(self, add_contents: impl FnOnce(&mut Ui, Pos2)) -> Self {
         menu::context_menu(&self, add_contents);
         self
     }

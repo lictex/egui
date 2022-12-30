@@ -1,5 +1,5 @@
 /// What sort of interaction is a widget sensitive to?
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Default, Clone, Copy, Debug, Eq, PartialEq)]
 // #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Sense {
     /// buttons, sliders, windows, …
