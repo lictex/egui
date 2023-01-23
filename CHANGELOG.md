@@ -15,6 +15,8 @@ NOTE: [`epaint`](crates/epaint/CHANGELOG.md), [`eframe`](crates/eframe/CHANGELOG
 * Add `Plot::clamp_grid` to only show grid where there is data ([#2480](https://github.com/emilk/egui/pull/2480)).
 * Add `ScrollArea::drag_to_scroll` if you want to turn off that feature.
 * Add `Response::on_hover_and_drag_cursor`.
+* Add `Window::default_open` ([#2539](https://github.com/emilk/egui/pull/2539))
+* Add `Button::rounding` to enable round buttons ([#2539](https://github.com/emilk/egui/pull/2539))
 
 ### Changed 🔧
 * `Frame::paint` now takes an extra `&Context` argument ([#2564](https://github.com/emilk/egui/pull/2564)).
@@ -25,6 +27,7 @@ NOTE: [`epaint`](crates/epaint/CHANGELOG.md), [`eframe`](crates/eframe/CHANGELOG
 * Trigger `PointerEvent::Released` for drags ([#2094](https://github.com/emilk/egui/pull/2094)).
 * Expose `TextEdit`'s multiline flag to AccessKit ([#2448](https://github.com/emilk/egui/pull/2448)).
 * Don't render `\r` (Carriage Return) ([#2452](https://github.com/emilk/egui/pull/2452)).
+* The `button_padding` style option works closer as expected with image+text buttons now ([#2510](https://github.com/emilk/egui/pull/2510)).
 
 
 ## 0.20.1 - 2022-12-11 - Fix key-repeat
