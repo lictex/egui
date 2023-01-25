@@ -254,7 +254,7 @@ impl Frame {
         if shadow == Default::default() {
             frame_shape
         } else {
-            let shadow = ctx.shadow_painter().paint(shadow, outer_rect, rounding);
+            let shadow = ctx.shadow_painter(|s| s.paint(shadow, outer_rect, rounding));
             Shape::Vec(vec![shadow, frame_shape])
         }
     }
