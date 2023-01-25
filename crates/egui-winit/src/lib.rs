@@ -24,6 +24,7 @@ mod window_settings;
 
 pub use window_settings::WindowSettings;
 
+use winit::dpi::PhysicalPosition;
 use winit::event_loop::EventLoopWindowTarget;
 
 #[cfg(feature = "wayland")]
@@ -34,7 +35,7 @@ use winit::event_loop::EventLoopWindowTarget;
     target_os = "netbsd",
     target_os = "openbsd"
 ))]
-use winit::platform::unix::EventLoopWindowTargetExtUnix;
+use winit::platform::wayland::EventLoopWindowTargetExtWayland;
 
 pub fn native_pixels_per_point(window: &winit::window::Window) -> f32 {
     window.scale_factor() as f32
@@ -88,6 +89,9 @@ pub struct State {
     /// Only one touch will be interpreted as pointer at any time.
     pointer_touch_id: Option<u64>,
 
+    last_pen_pos: PhysicalPosition<f64>,
+    last_pen_pressure: f64,
+
     /// track ime state
     input_method_editor_started: bool,
 
@@ -119,6 +123,9 @@ impl State {
 
             simulate_touch_screen: false,
             pointer_touch_id: None,
+
+            last_pen_pos: Default::default(),
+            last_pen_pressure: Default::default(),
 
             input_method_editor_started: false,
 
@@ -261,6 +268,84 @@ impl State {
                     consumed,
                 }
             }
+            WindowEvent::TabletPenEnter {
+                device_id,
+                inverted,
+            } => EventResponse {
+                repaint: true,
+                consumed: false,
+            },
+            WindowEvent::TabletPenLeave { device_id } => {
+                self.pointer_pos_in_points = None;
+                self.egui_input.events.push(egui::Event::PointerGone);
+                EventResponse {
+                    repaint: true,
+                    consumed: false,
+                }
+            }
+            WindowEvent::TabletPenMotion {
+                device_id,
+                location,
+                pressure,
+                rotation,
+                distance,
+                tilt,
+            } => {
+                if let Some(id) = self.pointer_touch_id {
+                    self.on_touch(&winit::event::Touch {
+                        device_id: *device_id,
+                        phase: winit::event::TouchPhase::Moved,
+                        location: *location,
+                        force: Some(winit::event::Force::Normalized(*pressure)),
+                        id,
+                    });
+                } else {
+                    self.on_cursor_moved(*location);
+                }
+                self.last_pen_pos = *location;
+                self.last_pen_pressure = *pressure;
+                EventResponse {
+                    repaint: true,
+                    consumed: egui_ctx.is_using_pointer(),
+                }
+            }
+            WindowEvent::TabletButton {
+                device_id,
+                button,
+                state,
+            } => {
+                match button {
+                    winit::event::TabletButton::Tip | winit::event::TabletButton::Eraser => {
+                        self.on_touch(&winit::event::Touch {
+                            device_id: *device_id,
+                            phase: match state {
+                                winit::event::ElementState::Pressed => {
+                                    winit::event::TouchPhase::Started
+                                }
+                                winit::event::ElementState::Released => {
+                                    winit::event::TouchPhase::Ended
+                                }
+                            },
+                            location: self.last_pen_pos,
+                            force: Some(winit::event::Force::Normalized(self.last_pen_pressure)),
+                            id: 15,
+                        });
+                    }
+                    winit::event::TabletButton::Pen(0) => {
+                        self.on_mouse_button_input(*state, winit::event::MouseButton::Middle)
+                    }
+                    winit::event::TabletButton::Pen(1) => {
+                        self.on_mouse_button_input(*state, winit::event::MouseButton::Right)
+                    }
+                    e => {
+                        dbg!(e);
+                    }
+                };
+                EventResponse {
+                    repaint: true,
+                    consumed: egui_ctx.wants_pointer_input(),
+                }
+            }
             WindowEvent::ReceivedCharacter(ch) => {
                 // On Mac we get here when the user presses Cmd-C (copy), ctrl-W, etc.
                 // We need to ignore these characters that are side-effects of commands.
@@ -393,6 +478,12 @@ impl State {
             },
             WindowEvent::Moved(_) => EventResponse {
                 repaint: false, // moving a window doesn't warrant a repaint
+                consumed: false,
+            },
+            WindowEvent::TouchpadMagnify { .. }
+            | WindowEvent::SmartMagnify { .. }
+            | WindowEvent::TouchpadRotate { .. } => EventResponse {
+                repaint: false,
                 consumed: false,
             },
         }

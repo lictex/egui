@@ -1,4 +1,4 @@
-use winit::event_loop::EventLoopWindowTarget;
+use winit::{event::TabletButton, event_loop::EventLoopWindowTarget};
 
 #[cfg(target_os = "macos")]
 use winit::platform::macos::WindowBuilderExtMacOS as _;
@@ -77,7 +77,11 @@ pub fn window_builder<E>(
 
     let mut window_builder = winit::window::WindowBuilder::new()
         .with_title(title)
-        .with_always_on_top(*always_on_top)
+        .with_window_level(if *always_on_top {
+            winit::window::WindowLevel::AlwaysOnTop
+        } else {
+            winit::window::WindowLevel::Normal
+        })
         .with_decorations(*decorated)
         .with_fullscreen(fullscreen.then(|| winit::window::Fullscreen::Borderless(None)))
         .with_maximized(*maximized)
@@ -216,7 +220,11 @@ pub fn handle_app_output(
     }
 
     if let Some(always_on_top) = always_on_top {
-        window.set_always_on_top(always_on_top);
+        window.set_window_level(if always_on_top {
+            winit::window::WindowLevel::AlwaysOnTop
+        } else {
+            winit::window::WindowLevel::Normal
+        });
     }
 }
 
@@ -345,7 +353,12 @@ impl EpiIntegration {
                 tracing::debug!("Received WindowEvent::Destroyed");
                 self.close = true;
             }
-            WindowEvent::MouseInput {
+            WindowEvent::TabletButton {
+                button: TabletButton::Tip | TabletButton::Eraser,
+                state: ElementState::Pressed,
+                ..
+            }
+            | WindowEvent::MouseInput {
                 button: MouseButton::Left,
                 state: ElementState::Pressed,
                 ..

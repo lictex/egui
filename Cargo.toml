@@ -33,3 +33,6 @@ split-debuginfo = "unpacked" # faster debug builds on mac
 # Optimize all dependencies even in debug builds (does not affect workspace packages):
 [profile.dev.package."*"]
 opt-level = 2
+
+[patch.crates-io]
+winit = { git = "https://github.com/xyning/winit/", rev = "75e17f4fea03bf725e873fb4f50eb058f0964863" }
