@@ -44,7 +44,7 @@ impl Painter {
     pub fn new(configuration: WgpuConfiguration, msaa_samples: u32, depth_bits: u8) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: configuration.backends,
-            dx12_shader_compiler: wgpu::Dx12Compiler::Fxc,
+            dx12_shader_compiler: Default::default(), //
         });
 
         Self {
@@ -137,7 +137,7 @@ impl Painter {
             height: height_in_pixels,
             present_mode: self.configuration.present_mode,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            view_formats: vec![],
+            view_formats: vec![format],
         };
 
         let surface_state = self
@@ -181,10 +181,10 @@ impl Painter {
     pub async unsafe fn set_window(
         &mut self,
         window: Option<&winit::window::Window>,
-    ) -> Result<(), wgpu::RequestDeviceError> {
+    ) -> Result<(), crate::WgpuError> {
         match window {
             Some(window) => {
-                let surface = self.instance.create_surface(&window).unwrap();
+                let surface = self.instance.create_surface(&window)?;
 
                 self.ensure_render_state_for_surface(&surface).await?;
 
@@ -238,7 +238,7 @@ impl Painter {
                     format: depth_format,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                         | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
+                    view_formats: &[depth_format],
                 })
                 .create_view(&wgpu::TextureViewDescriptor::default())
         });
