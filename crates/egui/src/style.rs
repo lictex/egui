@@ -174,6 +174,9 @@ pub struct Style {
     /// ```
     pub text_styles: BTreeMap<TextStyle, FontId>,
 
+    /// The style to use for [`DragValue`] text.
+    pub drag_value_text_style: TextStyle,
+
     /// If set, labels buttons wtc will use this to determine whether or not
     /// to wrap the text at the right edge of the [`Ui`] they are in.
     /// By default this is `None`.
@@ -497,6 +500,9 @@ pub struct Visuals {
     /// Show a background behind collapsing headers.
     pub collapsing_header_frame: bool,
 
+    /// Draw a vertical lien left of indented region, in e.g. [`crate::CollapsingHeader`].
+    pub indent_has_left_vline: bool,
+
     /// Wether or not Grids and Tables should be striped by default
     /// (have alternating rows differently colored).
     pub striped: bool,
@@ -570,7 +576,9 @@ pub struct Widgets {
     /// The style of an interactive widget, such as a button, at rest.
     pub inactive: WidgetVisuals,
 
-    /// The style of an interactive widget while you hover it.
+    /// The style of an interactive widget while you hover it, or when it is highlighted.
+    ///
+    /// See [`Response::hovered`], [`Response::highlighted`] and [`Response::highlight`].
     pub hovered: WidgetVisuals,
 
     /// The style of an interactive widget as you are clicking or dragging it.
@@ -586,7 +594,7 @@ impl Widgets {
             &self.noninteractive
         } else if response.is_pointer_button_down_on() || response.has_focus() {
             &self.active
-        } else if response.hovered() {
+        } else if response.hovered() || response.highlighted() {
             &self.hovered
         } else {
             &self.inactive
@@ -675,6 +683,7 @@ impl Default for Style {
             override_font_id: None,
             override_text_style: None,
             text_styles: default_text_styles(),
+            drag_value_text_style: TextStyle::Button,
             wrap: None,
             spacing: Spacing::default(),
             interaction: Interaction::default(),
@@ -752,6 +761,7 @@ impl Visuals {
             clip_rect_margin: 3.0, // should be at least half the size of the widest frame stroke + max WidgetVisuals::expansion
             button_frame: true,
             collapsing_header_frame: false,
+            indent_has_left_vline: true,
 
             striped: false,
         }
@@ -918,6 +928,7 @@ impl Style {
             override_font_id,
             override_text_style,
             text_styles,
+            drag_value_text_style,
             wrap: _,
             spacing,
             interaction,
@@ -955,6 +966,19 @@ impl Style {
                         let text =
                             crate::RichText::new(style.to_string()).text_style(style.clone());
                         ui.selectable_value(override_text_style, Some(style), text);
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Text style of DragValue:");
+            crate::ComboBox::from_id_source("drag_value_text_style")
+                .selected_text(drag_value_text_style.to_string())
+                .show_ui(ui, |ui| {
+                    let all_text_styles = ui.style().text_styles();
+                    for style in all_text_styles {
+                        let text =
+                            crate::RichText::new(style.to_string()).text_style(style.clone());
+                        ui.selectable_value(drag_value_text_style, style, text);
                     }
                 });
             ui.end_row();
@@ -1297,6 +1321,7 @@ impl Visuals {
             clip_rect_margin,
             button_frame,
             collapsing_header_frame,
+            indent_has_left_vline,
 
             striped,
         } = self;
@@ -1354,6 +1379,10 @@ impl Visuals {
 
         ui.checkbox(button_frame, "Button has a frame");
         ui.checkbox(collapsing_header_frame, "Collapsing header has a frame");
+        ui.checkbox(
+            indent_has_left_vline,
+            "Paint a vertical line to the left of indented regions",
+        );
 
         ui.checkbox(striped, "By default, add stripes to grids and tables?");
 
