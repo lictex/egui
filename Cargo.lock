@@ -4399,6 +4399,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e745dab35a0c4c77aa3ce42d595e13d2003d6902d6b08c9ef5fc326d08da12b"
+dependencies = [
+ "windows-targets",
+]
+
+[[package]]
 name = "windows-implement"
 version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4566,8 +4575,7 @@ checksum = "447660ad36a13288b1db4d4248e857b510e8c3a225c822ba4fb748c0aafecffd"
 [[package]]
 name = "winit"
 version = "0.28.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c4755d4ba0e3d30fc7beef2095e246b1e6a6fad0717608bcb87a2df4b003bcf"
+source = "git+https://github.com/xyning/winit/?rev=7b8a43f366926db3c1c53f7f29221d6f7f0c1618#7b8a43f366926db3c1c53f7f29221d6f7f0c1618"
 dependencies = [
  "android-activity",
  "bitflags",
@@ -4591,9 +4599,11 @@ dependencies = [
  "wasm-bindgen",
  "wayland-client",
  "wayland-commons",
+ "wayland-cursor",
  "wayland-protocols",
  "wayland-scanner",
  "web-sys",
+ "windows 0.44.0",
  "windows-sys 0.45.0",
  "x11-dl",
 ]
@@ -4809,8 +4819,3 @@ dependencies = [
  "quote",
  "syn",
 ]
-
-[[patch.unused]]
-name = "winit"
-version = "0.27.5"
-source = "git+https://github.com/xyning/winit/?rev=75e17f4fea03bf725e873fb4f50eb058f0964863#75e17f4fea03bf725e873fb4f50eb058f0964863"

@@ -29,7 +29,6 @@ NOTE: [`epaint`](crates/epaint/CHANGELOG.md), [`eframe`](crates/eframe/CHANGELOG
 * Add `Separator::grow` and `Separator::shrink` ([#2665](https://github.com/emilk/egui/pull/2665)).
 
 ### Changed 🔧
-* `Frame::paint` now takes an extra `&Context` argument ([#2564](https://github.com/emilk/egui/pull/2564)).
 * Improved plot grid appearance ([#2412](https://github.com/emilk/egui/pull/2412)).
 * Improved the algorithm for picking the number of decimals to show when hovering values in the `Plot`.
 * Default `ComboBox` is now controlled with `Spacing::combo_width` ([#2621](https://github.com/emilk/egui/pull/2621)).

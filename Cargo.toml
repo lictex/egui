@@ -35,4 +35,4 @@ opt-level = 2 # fast and small wasm, basically same as `opt-level = 's'`
 opt-level = 2
 
 [patch.crates-io]
-winit = { git = "https://github.com/xyning/winit/", rev = "75e17f4fea03bf725e873fb4f50eb058f0964863" }
+winit = { git = "https://github.com/xyning/winit/", rev = "7b8a43f366926db3c1c53f7f29221d6f7f0c1618" }
