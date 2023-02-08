@@ -260,6 +260,8 @@ pub struct Spacing {
     /// Horizontal and vertical margins within a menu frame.
     pub menu_margin: Margin,
 
+    pub tip_margin: Margin,
+
     /// Indent collapsing regions etc by this much.
     pub indent: f32,
 
@@ -709,6 +711,7 @@ impl Default for Spacing {
             item_spacing: vec2(8.0, 3.0),
             window_margin: Margin::same(6.0),
             menu_margin: Margin::same(6.0),
+            tip_margin: Margin::same(4.0),
             button_padding: vec2(4.0, 1.0),
             indent: 18.0, // match checkbox/radio-button with `button_padding.x + icon_width + icon_spacing`
             interact_size: vec2(40.0, 18.0),
@@ -1038,6 +1041,7 @@ impl Spacing {
             item_spacing,
             window_margin,
             menu_margin,
+            tip_margin,
             button_padding,
             indent,
             interact_size,
@@ -1060,6 +1064,7 @@ impl Spacing {
 
         margin_ui(ui, "Window margin:", window_margin);
         margin_ui(ui, "Menu margin:", menu_margin);
+        margin_ui(ui, "Tip margin:", tip_margin);
 
         ui.add(slider_vec2(button_padding, 0.0..=20.0, "Button padding"));
         ui.add(slider_vec2(interact_size, 4.0..=60.0, "Interact size"))

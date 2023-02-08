@@ -83,7 +83,7 @@ impl Frame {
 
     pub fn popup(style: &Style) -> Self {
         Self {
-            inner_margin: style.spacing.menu_margin,
+            inner_margin: style.spacing.tip_margin,
             rounding: style.visuals.menu_rounding,
             shadow: style.visuals.popup_shadow,
             fill: style.visuals.window_fill(),
