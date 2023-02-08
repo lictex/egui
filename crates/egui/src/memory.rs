@@ -615,7 +615,9 @@ impl Areas {
 
     pub fn move_to_top(&mut self, layer_id: LayerId) {
         self.visible_current_frame.insert(layer_id);
-        self.wants_to_be_on_top.insert(layer_id);
+        if layer_id.order == crate::Order::Middle {
+            self.wants_to_be_on_top.insert(layer_id);
+        }
 
         if !self.order.iter().any(|x| *x == layer_id) {
             self.order.push(layer_id);
