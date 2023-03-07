@@ -31,7 +31,6 @@ pub fn paint_and_schedule(
         runner_ref: AppRunnerRef,
         panicked: Arc<AtomicBool>,
     ) -> Result<(), JsValue> {
-        use wasm_bindgen::JsCast;
         let window = web_sys::window().unwrap();
         let closure = Closure::once(move || paint_and_schedule(&runner_ref, panicked));
         window.request_animation_frame(closure.as_ref().unchecked_ref())?;
@@ -95,7 +94,12 @@ pub fn install_document_events(runner_container: &mut AppRunnerContainer) -> Res
                 // egui wants to use tab to move to the next text field.
                 true
             } else if egui_key == Some(Key::P) {
-                true // Prevent ctrl-P opening the print dialog. Users may want to use it for a command palette.
+                #[allow(clippy::needless_bool)]
+                if modifiers.ctrl || modifiers.command || modifiers.mac_cmd {
+                    true // Prevent ctrl-P opening the print dialog. Users may want to use it for a command palette.
+                } else {
+                    false // let normal P:s through
+                }
             } else if egui_wants_keyboard {
                 matches!(
                     event.key().as_str(),
