@@ -6,6 +6,12 @@
 
 #![warn(missing_docs)] // Let's keep `epi` well-documented.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod icon_data;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use icon_data::IconData;
+
 #[cfg(target_arch = "wasm32")]
 use std::any::Any;
 
@@ -99,11 +105,12 @@ pub trait App {
     ///
     /// On web the state is stored to "Local Storage".
     /// On native the path is picked using [`directories_next::ProjectDirs::data_dir`](https://docs.rs/directories-next/2.0.0/directories_next/struct.ProjectDirs.html#method.data_dir) which is:
-    /// * Linux:   `/home/UserName/.local/share/APPNAME`
-    /// * macOS:   `/Users/UserName/Library/Application Support/APPNAME`
-    /// * Windows: `C:\Users\UserName\AppData\Roaming\APPNAME`
+    /// * Linux:   `/home/UserName/.local/share/APP_ID`
+    /// * macOS:   `/Users/UserName/Library/Application Support/APP_ID`
+    /// * Windows: `C:\Users\UserName\AppData\Roaming\APP_ID`
     ///
-    /// where `APPNAME` is what is given to `eframe::run_native`.
+    /// where `APP_ID` is determined by either [`NativeOptions::app_id`] or
+    /// the title argument to [`crate::run_native`].
     fn save(&mut self, _storage: &mut dyn Storage) {}
 
     /// Called when the user attempts to close the desktop window and/or quit the application.
@@ -254,10 +261,10 @@ pub struct NativeOptions {
     /// [drag_and_drop]: https://docs.rs/winit/latest/x86_64-pc-windows-msvc/winit/platform/windows/trait.WindowBuilderExtWindows.html#tymethod.with_drag_and_drop
     pub drag_and_drop_support: bool,
 
-    /// The application icon, e.g. in the Windows task bar etc.
+    /// The application icon, e.g. in the Windows task bar or the alt-tab menu.
     ///
-    /// This doesn't work on Mac and on Wayland.
-    /// See <https://docs.rs/winit/latest/winit/window/struct.Window.html#method.set_window_icon> for more.
+    /// The default icon is a white `e` on a black background (for "egui" or "eframe").
+    /// If you prefer the OS default, set this to `None`.
     pub icon_data: Option<IconData>,
 
     /// The initial (inner) position of the native window in points (logical pixels).
@@ -284,6 +291,9 @@ pub struct NativeOptions {
     /// Generally you would use this in conjunction with always_on_top
     pub mouse_passthrough: bool,
 
+    /// Whether grant focus when window initially opened. True by default.
+    pub active: bool,
+
     /// Turn on vertical syncing, limiting the FPS to the display refresh rate.
     ///
     /// The default is `true`.
@@ -303,10 +313,6 @@ pub struct NativeOptions {
     /// Sets the number of bits in the depth buffer.
     ///
     /// `egui` doesn't need the depth buffer, so the default value is 0.
-    ///
-    /// On `wgpu` backends, due to limited depth texture format options, this
-    /// will be interpreted as a boolean (non-zero = true) for whether or not
-    /// specifically a `Depth32Float` buffer is used.
     pub depth_buffer: u8,
 
     /// Sets the number of bits in the stencil buffer.
@@ -325,18 +331,15 @@ pub struct NativeOptions {
 
     /// Try to detect and follow the system preferred setting for dark vs light mode.
     ///
-    /// By default, this is `true` on Mac and Windows, but `false` on Linux
-    /// due to <https://github.com/frewsxcv/rust-dark-light/issues/17>.
+    /// The theme will automatically change when the dark vs light mode preference is changed.
     ///
-    /// On Mac and Windows the theme will automatically change when the dark vs light mode preference is changed.
-    ///
-    /// This only works on Linux if the `dark-light` feature is enabled.
+    /// Does not work on Linux (see <https://github.com/rust-windowing/winit/issues/1549>).
     ///
     /// See also [`Self::default_theme`].
     pub follow_system_theme: bool,
 
     /// Which theme to use in case [`Self::follow_system_theme`] is `false`
-    /// or the `dark-light` feature is disabled.
+    /// or eframe fails to detect the system theme.
     ///
     /// Default: [`Theme::Dark`].
     pub default_theme: Theme,
@@ -381,6 +384,50 @@ pub struct NativeOptions {
     /// Configures wgpu instance/device/adapter/surface creation and renderloop.
     #[cfg(feature = "wgpu")]
     pub wgpu_options: egui_wgpu::WgpuConfiguration,
+
+    /// The application id, used for determining the folder to persist the app to.
+    ///
+    /// On native the path is picked using [`directories_next::ProjectDirs::data_dir`](https://docs.rs/directories-next/2.0.0/directories_next/struct.ProjectDirs.html#method.data_dir) which is:
+    /// * Linux:   `/home/UserName/.local/share/APP_ID`
+    /// * macOS:   `/Users/UserName/Library/Application Support/APP_ID`
+    /// * Windows: `C:\Users\UserName\AppData\Roaming\APP_ID`
+    ///
+    /// If you don't set [`Self::app_id`], the title argument to [`crate::run_native`]
+    /// will be used instead.
+    ///
+    /// ### On Wayland
+    /// On Wauland this sets the Application ID for the window.
+    ///
+    /// The application ID is used in several places of the compositor, e.g. for
+    /// grouping windows of the same application. It is also important for
+    /// connecting the configuration of a `.desktop` file with the window, by
+    /// using the application ID as file name. This allows e.g. a proper icon
+    /// handling under Wayland.
+    ///
+    /// See [Waylands XDG shell documentation][xdg-shell] for more information
+    /// on this Wayland-specific option.
+    ///
+    /// [xdg-shell]: https://wayland.app/protocols/xdg-shell#xdg_toplevel:request:set_app_id
+    ///
+    /// # Example
+    /// ``` no_run
+    /// fn main() -> eframe::Result<()> {
+    ///
+    ///     let mut options = eframe::NativeOptions::default();
+    ///     // Set the application ID for Wayland only on Linux
+    ///     #[cfg(target_os = "linux")]
+    ///     {
+    ///         options.app_id = Some("egui-example".to_string());
+    ///     }
+    ///
+    ///     eframe::run_simple_native("My egui App", options, move |ctx, _frame| {
+    ///         egui::CentralPanel::default().show(ctx, |ui| {
+    ///             ui.heading("My egui Application");
+    ///         });
+    ///     })
+    /// }
+    /// ```
+    pub app_id: Option<String>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -394,6 +441,8 @@ impl Clone for NativeOptions {
 
             #[cfg(feature = "wgpu")]
             wgpu_options: self.wgpu_options.clone(),
+
+            app_id: self.app_id.clone(),
 
             ..*self
         }
@@ -412,8 +461,12 @@ impl Default for NativeOptions {
             #[cfg(target_os = "macos")]
             fullsize_content: false,
 
+            // We set a default "egui" or "eframe" icon, which is usually more distinctive than the default OS icon.
+            icon_data: Some(
+                IconData::try_from_png_bytes(&include_bytes!("../../data/icon.png")[..]).unwrap(),
+            ),
+
             drag_and_drop_support: true,
-            icon_data: None,
             initial_window_pos: None,
             initial_window_size: None,
             min_window_size: None,
@@ -421,6 +474,9 @@ impl Default for NativeOptions {
             resizable: true,
             transparent: false,
             mouse_passthrough: false,
+
+            active: true,
+
             vsync: true,
             multisampling: 0,
             depth_buffer: 0,
@@ -444,31 +500,9 @@ impl Default for NativeOptions {
 
             #[cfg(feature = "wgpu")]
             wgpu_options: egui_wgpu::WgpuConfiguration::default(),
-        }
-    }
-}
 
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeOptions {
-    /// The theme used by the system.
-    #[cfg(feature = "dark-light")]
-    pub fn system_theme(&self) -> Option<Theme> {
-        if self.follow_system_theme {
-            crate::profile_scope!("dark_light::detect");
-            match dark_light::detect() {
-                dark_light::Mode::Dark => Some(Theme::Dark),
-                dark_light::Mode::Light => Some(Theme::Light),
-                dark_light::Mode::Default => None,
-            }
-        } else {
-            None
+            app_id: None,
         }
-    }
-
-    /// The theme used by the system.
-    #[cfg(not(feature = "dark-light"))]
-    pub fn system_theme(&self) -> Option<Theme> {
-        None
     }
 }
 
@@ -490,6 +524,12 @@ pub struct WebOptions {
     /// Default: `Theme::Dark`.
     pub default_theme: Theme,
 
+    /// Sets the number of bits in the depth buffer.
+    ///
+    /// `egui` doesn't need the depth buffer, so the default value is 0.
+    /// Unused by webgl context as of writing.
+    pub depth_buffer: u8,
+
     /// Which version of WebGl context to select
     ///
     /// Default: [`WebGlContextOption::BestFirst`].
@@ -507,26 +547,13 @@ impl Default for WebOptions {
         Self {
             follow_system_theme: true,
             default_theme: Theme::Dark,
+            depth_buffer: 0,
 
             #[cfg(feature = "glow")]
             webgl_context_option: WebGlContextOption::BestFirst,
 
             #[cfg(feature = "wgpu")]
-            wgpu_options: egui_wgpu::WgpuConfiguration {
-                // WebGPU is not stable enough yet, use WebGL emulation
-                backends: wgpu::Backends::GL,
-                device_descriptor: wgpu::DeviceDescriptor {
-                    label: Some("egui wgpu device"),
-                    features: wgpu::Features::default(),
-                    limits: wgpu::Limits {
-                        // When using a depth buffer, we have to be able to create a texture
-                        // large enough for the entire surface, and we want to support 4k+ displays.
-                        max_texture_dimension_2d: 8192,
-                        ..wgpu::Limits::downlevel_webgl2_defaults()
-                    },
-                },
-                ..Default::default()
-            },
+            wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         }
     }
 }
@@ -641,19 +668,6 @@ impl std::str::FromStr for Renderer {
 }
 
 // ----------------------------------------------------------------------------
-
-/// Image data for an application icon.
-#[derive(Clone)]
-pub struct IconData {
-    /// RGBA pixels, unmultiplied.
-    pub rgba: Vec<u8>,
-
-    /// Image width. This should be a multiple of 4.
-    pub width: u32,
-
-    /// Image height. This should be a multiple of 4.
-    pub height: u32,
-}
 
 /// Represents the surroundings of your app.
 ///
@@ -804,7 +818,7 @@ impl Frame {
     #[doc(alias = "exit")]
     #[doc(alias = "quit")]
     pub fn close(&mut self) {
-        tracing::debug!("eframe::Frame::close called");
+        log::debug!("eframe::Frame::close called");
         self.output.close = true;
     }
 
@@ -812,6 +826,29 @@ impl Frame {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_minimized(&mut self, minimized: bool) {
         self.output.minimized = Some(minimized);
+    }
+
+    /// Bring the window into focus (native only). Has no effect on Wayland, or if the window is minimized or invisible.
+    ///
+    /// This method puts the window on top of other applications and takes input focus away from them,
+    /// which, if unexpected, will disturb the user.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn focus(&mut self) {
+        self.output.focus = Some(true);
+    }
+
+    /// If the window is unfocused, attract the user's attention (native only).
+    ///
+    /// Typically, this means that the window will flash on the taskbar, or bounce, until it is interacted with.
+    ///
+    /// When the window comes into focus, or if `None` is passed, the attention request will be automatically reset.
+    ///
+    /// See [winit's documentation][user_attention_details] for platform-specific effect details.
+    ///
+    /// [user_attention_details]: https://docs.rs/winit/latest/winit/window/enum.UserAttentionType.html
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn request_user_attention(&mut self, kind: egui::UserAttentionType) {
+        self.output.attention = Some(kind);
     }
 
     /// Maximize or unmaximize window. (native only)
@@ -938,6 +975,11 @@ pub struct WindowInfo {
     /// Are we maximized?
     pub maximized: bool,
 
+    /// Is the window focused and able to receive input?
+    ///
+    /// This should be the same as [`egui::InputState::focused`].
+    pub focused: bool,
+
     /// Window inner size in egui points (logical pixels).
     pub size: egui::Vec2,
 
@@ -1062,7 +1104,13 @@ impl Storage for DummyStorage {
 pub fn get_value<T: serde::de::DeserializeOwned>(storage: &dyn Storage, key: &str) -> Option<T> {
     storage
         .get_string(key)
-        .and_then(|value| ron::from_str(&value).ok())
+        .and_then(|value| match ron::from_str(&value) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                log::warn!("Failed to decode RON: {err}");
+                None
+            }
+        })
 }
 
 /// Serialize the given value as [RON](https://github.com/ron-rs/ron) and store with the given key.
@@ -1070,7 +1118,7 @@ pub fn get_value<T: serde::de::DeserializeOwned>(storage: &dyn Storage, key: &st
 pub fn set_value<T: serde::Serialize>(storage: &mut dyn Storage, key: &str, value: &T) {
     match ron::ser::to_string(value) {
         Ok(string) => storage.set_string(key, string),
-        Err(err) => tracing::error!("eframe failed to encode data using ron: {}", err),
+        Err(err) => log::error!("eframe failed to encode data using ron: {}", err),
     }
 }
 
@@ -1128,6 +1176,14 @@ pub(crate) mod backend {
         /// Set to some bool to maximize or unmaximize window.
         #[cfg(not(target_arch = "wasm32"))]
         pub maximized: Option<bool>,
+
+        /// Set to some bool to focus window.
+        #[cfg(not(target_arch = "wasm32"))]
+        pub focus: Option<bool>,
+
+        /// Set to request a user's attention to the native window.
+        #[cfg(not(target_arch = "wasm32"))]
+        pub attention: Option<egui::UserAttentionType>,
 
         #[cfg(not(target_arch = "wasm32"))]
         pub screenshot_requested: bool,

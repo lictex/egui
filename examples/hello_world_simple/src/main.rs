@@ -3,8 +3,7 @@
 use eframe::egui;
 
 fn main() -> Result<(), eframe::Error> {
-    // Log to stdout (if you run with `RUST_LOG=debug`).
-    tracing_subscriber::fmt::init();
+    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
 
     let options = eframe::NativeOptions {
         initial_window_size: Some(egui::vec2(320.0, 240.0)),
@@ -27,7 +26,7 @@ fn main() -> Result<(), eframe::Error> {
             if ui.button("Click each year").clicked() {
                 age += 1;
             }
-            ui.label(format!("Hello '{}', age {}", name, age));
+            ui.label(format!("Hello '{name}', age {age}"));
         });
     })
 }
