@@ -39,3 +39,4 @@ thiserror = "1.0.37"
 
 [patch.crates-io]
 winit = { git = "https://github.com/xyning/winit/", rev = "7b8a43f366926db3c1c53f7f29221d6f7f0c1618" }
+# sctk-adwaita = { path = "../sctk-adwaita" }
