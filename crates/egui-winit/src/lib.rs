@@ -14,6 +14,9 @@ pub use accesskit_winit;
 pub use egui;
 #[cfg(feature = "accesskit")]
 use egui::accesskit;
+use egui::{
+    Pos2, Rect, Vec2, ViewportBuilder, ViewportCommand, ViewportId, ViewportIdPair, ViewportInfo,
+};
 pub use winit;
 
 pub mod clipboard;
@@ -23,11 +26,11 @@ pub use window_settings::WindowSettings;
 
 use raw_window_handle::HasRawDisplayHandle;
 
-pub fn native_pixels_per_point(window: &winit::window::Window) -> f32 {
+pub fn native_pixels_per_point(window: &Window) -> f32 {
     window.scale_factor() as f32
 }
 
-pub fn screen_size_in_pixels(window: &winit::window::Window) -> egui::Vec2 {
+pub fn screen_size_in_pixels(window: &Window) -> egui::Vec2 {
     let size = window.inner_size();
     egui::vec2(size.width as f32, size.height as f32)
 }
@@ -51,9 +54,11 @@ pub struct EventResponse {
 
 // ----------------------------------------------------------------------------
 
-/// Handles the integration between egui and winit.
+/// Handles the integration between egui and a winit Window.
+///
+/// Instantiate one of these per viewport/window.
 pub struct State {
-    start_time: instant::Instant,
+    start_time: web_time::Instant,
     egui_input: egui::RawInput,
     pointer_pos_in_points: Option<egui::Pos2>,
     any_pointer_button_down: bool,
@@ -83,22 +88,26 @@ pub struct State {
 
     #[cfg(feature = "accesskit")]
     accesskit: Option<accesskit_winit::Adapter>,
+
+    allow_ime: bool,
 }
 
 impl State {
     /// Construct a new instance
-    ///
-    /// # Safety
-    ///
-    /// The returned `State` must not outlive the input `display_target`.
-    pub fn new(display_target: &dyn HasRawDisplayHandle) -> Self {
+    pub fn new(
+        display_target: &dyn HasRawDisplayHandle,
+        native_pixels_per_point: Option<f32>,
+        max_texture_side: Option<usize>,
+    ) -> Self {
+        crate::profile_function!();
+
         let egui_input = egui::RawInput {
             focused: false, // winit will tell us when we have focus
             ..Default::default()
         };
 
-        Self {
-            start_time: instant::Instant::now(),
+        let mut slf = Self {
+            start_time: web_time::Instant::now(),
             egui_input,
             pointer_pos_in_points: None,
             any_pointer_button_down: false,
@@ -117,16 +126,26 @@ impl State {
 
             #[cfg(feature = "accesskit")]
             accesskit: None,
+
+            allow_ime: false,
+        };
+        if let Some(native_pixels_per_point) = native_pixels_per_point {
+            slf.set_pixels_per_point(native_pixels_per_point);
         }
+        if let Some(max_texture_side) = max_texture_side {
+            slf.set_max_texture_side(max_texture_side);
+        }
+        slf
     }
 
     #[cfg(feature = "accesskit")]
     pub fn init_accesskit<T: From<accesskit_winit::ActionRequestEvent> + Send>(
         &mut self,
-        window: &winit::window::Window,
+        window: &Window,
         event_loop_proxy: winit::event_loop::EventLoopProxy<T>,
         initial_tree_update_factory: impl 'static + FnOnce() -> accesskit::TreeUpdate + Send,
     ) {
+        crate::profile_function!();
         self.accesskit = Some(accesskit_winit::Adapter::new(
             window,
             initial_tree_update_factory,
@@ -167,28 +186,53 @@ impl State {
         &self.egui_input
     }
 
+    /// The current input state.
+    /// This is changed by [`Self::on_event`] and cleared by [`Self::take_egui_input`].
+    #[inline]
+    pub fn egui_input_mut(&mut self) -> &mut egui::RawInput {
+        &mut self.egui_input
+    }
+
+    /// Update the given viewport info with the current state of the window.
+    ///
+    /// Call before [`Self::update_viewport_info`]
+    pub fn update_viewport_info(&self, info: &mut ViewportInfo, window: &Window) {
+        update_viewport_info(info, window, self.pixels_per_point());
+    }
+
     /// Prepare for a new frame by extracting the accumulated input,
+    ///
     /// as well as setting [the time](egui::RawInput::time) and [screen rectangle](egui::RawInput::screen_rect).
-    pub fn take_egui_input(&mut self, window: &winit::window::Window) -> egui::RawInput {
+    ///
+    /// You need to set [`egui::RawInput::viewports`] yourself though.
+    /// Use [`Self::update_viewport_info`] to update the info for each
+    /// viewport.
+    pub fn take_egui_input(&mut self, window: &Window, ids: ViewportIdPair) -> egui::RawInput {
+        crate::profile_function!();
+
         let pixels_per_point = self.pixels_per_point();
 
         self.egui_input.time = Some(self.start_time.elapsed().as_secs_f64());
+
+        // TODO remove this in winit 0.29
+        // This hack make the window outer_position and size to be valid, X11 Only
+        // That was happending because winit get the window state before the compositor adds decorations!
+        #[cfg(all(feature = "x11", target_os = "linux"))]
+        window.set_maximized(window.is_maximized());
 
         // On Windows, a minimized window will have 0 width and height.
         // See: https://github.com/rust-windowing/winit/issues/208
         // This solves an issue where egui window positions would be changed when minimizing on Windows.
         let screen_size_in_pixels = screen_size_in_pixels(window);
         let screen_size_in_points = screen_size_in_pixels / pixels_per_point;
-        self.egui_input.screen_rect =
-            if screen_size_in_points.x > 0.0 && screen_size_in_points.y > 0.0 {
-                Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    screen_size_in_points,
-                ))
-            } else {
-                None
-            };
 
+        self.egui_input.screen_rect = (screen_size_in_points.x > 0.0
+            && screen_size_in_points.y > 0.0)
+            .then(|| Rect::from_min_size(Pos2::ZERO, screen_size_in_points));
+
+        // Tell egui which viewport is now active:
+        self.egui_input.viewport_ids = ids;
+        self.egui_input.native_pixels_per_point = Some(native_pixels_per_point(window));
         self.egui_input.take()
     }
 
@@ -199,7 +243,10 @@ impl State {
         &mut self,
         egui_ctx: &egui::Context,
         event: &winit::event::WindowEvent<'_>,
+        viewport_id: ViewportId,
     ) -> EventResponse {
+        crate::profile_function!();
+
         use winit::event::WindowEvent;
         match event {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -375,7 +422,7 @@ impl State {
                             .events
                             .push(egui::Event::CompositionEnd(text.clone()));
                     }
-                    winit::event::Ime::Preedit(text, ..) => {
+                    winit::event::Ime::Preedit(text, Some(_)) => {
                         if !self.input_method_editor_started {
                             self.input_method_editor_started = true;
                             self.egui_input.events.push(egui::Event::CompositionStart);
@@ -384,6 +431,7 @@ impl State {
                             .events
                             .push(egui::Event::CompositionUpdate(text.clone()));
                     }
+                    winit::event::Ime::Preedit(_, None) => {}
                 };
 
                 EventResponse {
@@ -391,8 +439,9 @@ impl State {
                     consumed: egui_ctx.wants_keyboard_input(),
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                self.on_keyboard_input(event);
+            WindowEvent::KeyboardInput { input, .. } => {
+                self.on_keyboard_input(input);
+                // When pressing the Tab key, egui focuses the first focusable element, hence Tab always consumes.
                 let consumed = egui_ctx.wants_keyboard_input()
                     || event.physical_key == winit::keyboard::KeyCode::Tab;
                 EventResponse {
@@ -459,11 +508,20 @@ impl State {
             }
 
             // Things that may require repaint:
-            WindowEvent::CloseRequested
-            | WindowEvent::CursorEntered { .. }
+            WindowEvent::CloseRequested => {
+                if let Some(viewport_info) = self.egui_input.viewports.get_mut(&viewport_id) {
+                    viewport_info.close_requested = true;
+                }
+                EventResponse {
+                    consumed: true,
+                    repaint: true,
+                }
+            }
+            WindowEvent::CursorEntered { .. }
             | WindowEvent::Destroyed
             | WindowEvent::Occluded(_)
             | WindowEvent::Resized(_)
+            | WindowEvent::Moved(_)
             | WindowEvent::ThemeChanged(_)
             | WindowEvent::TouchpadPressure { .. } => EventResponse {
                 repaint: true,
@@ -472,7 +530,6 @@ impl State {
 
             // Things we completely ignore:
             WindowEvent::AxisMotion { .. }
-            | WindowEvent::Moved(_)
             | WindowEvent::SmartMagnify { .. }
             | WindowEvent::TouchpadRotate { .. } => EventResponse {
                 repaint: false,
@@ -527,7 +584,7 @@ impl State {
                             id: egui::TouchId(0),
                             phase: egui::TouchPhase::Start,
                             pos,
-                            force: 0.0,
+                            force: None,
                         });
                     } else {
                         self.any_pointer_button_down = false;
@@ -539,7 +596,7 @@ impl State {
                             id: egui::TouchId(0),
                             phase: egui::TouchPhase::End,
                             pos,
-                            force: 0.0,
+                            force: None,
                         });
                     };
                 }
@@ -565,7 +622,7 @@ impl State {
                     id: egui::TouchId(0),
                     phase: egui::TouchPhase::Move,
                     pos: pos_in_points,
-                    force: 0.0,
+                    force: None,
                 });
             }
         } else {
@@ -591,13 +648,13 @@ impl State {
                 touch.location.y as f32 / self.pixels_per_point(),
             ),
             force: match touch.force {
-                Some(winit::event::Force::Normalized(force)) => force as f32,
+                Some(winit::event::Force::Normalized(force)) => Some(force as f32),
                 Some(winit::event::Force::Calibrated {
                     force,
                     max_possible_force,
                     ..
-                }) => (force / max_possible_force) as f32,
-                None => 0_f32,
+                }) => Some((force / max_possible_force) as f32),
+                None => None,
             },
         });
         // If we're not yet translating a touch or we're translating this very
@@ -724,21 +781,25 @@ impl State {
     /// *
     pub fn handle_platform_output(
         &mut self,
-        window: &winit::window::Window,
+        window: &Window,
+        viewport_id: ViewportId,
         egui_ctx: &egui::Context,
         platform_output: egui::PlatformOutput,
     ) {
+        crate::profile_function!();
+
         let egui::PlatformOutput {
             cursor_icon,
             open_url,
             copied_text,
-            events: _,                    // handled above
+            events: _,                    // handled elsewhere
             mutable_text_under_cursor: _, // only used in eframe web
             text_cursor_pos,
             #[cfg(feature = "accesskit")]
             accesskit_update,
         } = platform_output;
-        self.current_pixels_per_point = egui_ctx.pixels_per_point(); // someone can have changed it to scale the UI
+
+        self.current_pixels_per_point = egui_ctx.input_for(viewport_id, |i| i.pixels_per_point); // someone can have changed it to scale the UI
 
         self.set_cursor_icon(window, cursor_icon);
 
@@ -748,6 +809,12 @@ impl State {
 
         if !copied_text.is_empty() {
             self.clipboard.set(copied_text);
+        }
+
+        let allow_ime = text_cursor_pos.is_some();
+        if self.allow_ime != allow_ime {
+            self.allow_ime = allow_ime;
+            window.set_ime_allowed(allow_ime);
         }
 
         if let Some(egui::Pos2 { x, y }) = text_cursor_pos {
@@ -762,7 +829,7 @@ impl State {
         }
     }
 
-    fn set_cursor_icon(&mut self, window: &winit::window::Window, cursor_icon: egui::CursorIcon) {
+    fn set_cursor_icon(&mut self, window: &Window, cursor_icon: egui::CursorIcon) {
         if self.current_cursor_icon == Some(cursor_icon) {
             // Prevent flickering near frame boundary when Windows OS tries to control cursor icon for window resizing.
             // On other platforms: just early-out to save CPU.
@@ -784,6 +851,82 @@ impl State {
             self.current_cursor_icon = None;
         }
     }
+}
+
+fn update_viewport_info(viewport_info: &mut ViewportInfo, window: &Window, pixels_per_point: f32) {
+    crate::profile_function!();
+
+    let has_a_position = match window.is_minimized() {
+        None | Some(true) => false,
+        Some(false) => true,
+    };
+
+    let inner_pos_px = if has_a_position {
+        window
+            .inner_position()
+            .map(|pos| Pos2::new(pos.x as f32, pos.y as f32))
+            .ok()
+    } else {
+        None
+    };
+
+    let outer_pos_px = if has_a_position {
+        window
+            .outer_position()
+            .map(|pos| Pos2::new(pos.x as f32, pos.y as f32))
+            .ok()
+    } else {
+        None
+    };
+
+    let inner_size_px = if has_a_position {
+        let size = window.inner_size();
+        Some(Vec2::new(size.width as f32, size.height as f32))
+    } else {
+        None
+    };
+
+    let outer_size_px = if has_a_position {
+        let size = window.outer_size();
+        Some(Vec2::new(size.width as f32, size.height as f32))
+    } else {
+        None
+    };
+
+    let inner_rect_px = if let (Some(pos), Some(size)) = (inner_pos_px, inner_size_px) {
+        Some(Rect::from_min_size(pos, size))
+    } else {
+        None
+    };
+
+    let outer_rect_px = if let (Some(pos), Some(size)) = (outer_pos_px, outer_size_px) {
+        Some(Rect::from_min_size(pos, size))
+    } else {
+        None
+    };
+
+    let inner_rect = inner_rect_px.map(|r| r / pixels_per_point);
+    let outer_rect = outer_rect_px.map(|r| r / pixels_per_point);
+
+    let monitor = window.current_monitor().is_some();
+    let monitor_size = if monitor {
+        let size = window
+            .current_monitor()
+            .unwrap()
+            .size()
+            .to_logical::<f32>(pixels_per_point.into());
+        Some(egui::vec2(size.width, size.height))
+    } else {
+        None
+    };
+
+    viewport_info.title = Some(window.title());
+    viewport_info.pixels_per_point = pixels_per_point;
+    viewport_info.monitor_size = monitor_size;
+    viewport_info.inner_rect = inner_rect;
+    viewport_info.outer_rect = outer_rect;
+    viewport_info.fullscreen = Some(window.fullscreen().is_some());
+    viewport_info.focused = Some(window.has_focus());
 }
 
 fn open_url_in_browser(_url: &str) {
@@ -852,11 +995,11 @@ fn translate_virtual_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key
         KeyCode::ArrowRight => Key::ArrowRight,
         KeyCode::ArrowUp => Key::ArrowUp,
 
-        KeyCode::Escape => Key::Escape,
-        KeyCode::Tab => Key::Tab,
-        KeyCode::Backspace => Key::Backspace,
-        KeyCode::Enter => Key::Enter,
-        KeyCode::Space => Key::Space,
+        VirtualKeyCode::Escape => Key::Escape,
+        VirtualKeyCode::Tab => Key::Tab,
+        VirtualKeyCode::Back => Key::Backspace,
+        VirtualKeyCode::Return | VirtualKeyCode::NumpadEnter => Key::Enter,
+        VirtualKeyCode::Space => Key::Space,
 
         KeyCode::Insert => Key::Insert,
         KeyCode::Delete => Key::Delete,
@@ -865,10 +1008,12 @@ fn translate_virtual_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key
         KeyCode::PageUp => Key::PageUp,
         KeyCode::PageDown => Key::PageDown,
 
-        KeyCode::Minus => Key::Minus,
+        VirtualKeyCode::Minus | VirtualKeyCode::NumpadSubtract => Key::Minus,
         // Using Mac the key with the Plus sign on it is reported as the Equals key
         // (with both English and Swedish keyboard).
-        KeyCode::Equal => Key::PlusEquals,
+        VirtualKeyCode::Equals | VirtualKeyCode::Plus | VirtualKeyCode::NumpadAdd => {
+            Key::PlusEquals
+        }
 
         KeyCode::Digit0 | KeyCode::Numpad0 => Key::Num0,
         KeyCode::Digit1 | KeyCode::Numpad1 => Key::Num1,
@@ -979,28 +1124,308 @@ fn translate_cursor(cursor_icon: egui::CursorIcon) -> Option<winit::window::Curs
     }
 }
 
+// Helpers for egui Viewports
 // ---------------------------------------------------------------------------
 
-/// Profiling macro for feature "puffin"
-#[allow(unused_macros)]
-macro_rules! profile_function {
-    ($($arg: tt)*) => {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!($($arg)*);
-    };
+pub fn process_viewport_commands(
+    info: &mut ViewportInfo,
+    commands: impl IntoIterator<Item = ViewportCommand>,
+    window: &Window,
+    is_viewport_focused: bool,
+    screenshot_requested: &mut bool,
+) {
+    crate::profile_function!();
+
+    use winit::window::ResizeDirection;
+
+    for command in commands {
+        match command {
+            ViewportCommand::Close => {
+                info.close_requested = true;
+            }
+            ViewportCommand::StartDrag => {
+                // If `is_viewport_focused` is not checked on x11 the input will be permanently taken until the app is killed!
+
+                // TODO: check that the left mouse-button was pressed down recently,
+                // or we will have bugs on Windows.
+                // See https://github.com/emilk/egui/pull/1108
+                if is_viewport_focused {
+                    if let Err(err) = window.drag_window() {
+                        log::warn!("{command:?}: {err}");
+                    }
+                }
+            }
+            ViewportCommand::InnerSize(size) => {
+                let width = size.x.max(1.0);
+                let height = size.y.max(1.0);
+                window.set_inner_size(LogicalSize::new(width, height));
+            }
+            ViewportCommand::BeginResize(direction) => {
+                if let Err(err) = window.drag_resize_window(match direction {
+                    egui::viewport::ResizeDirection::North => ResizeDirection::North,
+                    egui::viewport::ResizeDirection::South => ResizeDirection::South,
+                    egui::viewport::ResizeDirection::West => ResizeDirection::West,
+                    egui::viewport::ResizeDirection::NorthEast => ResizeDirection::NorthEast,
+                    egui::viewport::ResizeDirection::SouthEast => ResizeDirection::SouthEast,
+                    egui::viewport::ResizeDirection::NorthWest => ResizeDirection::NorthWest,
+                    egui::viewport::ResizeDirection::SouthWest => ResizeDirection::SouthWest,
+                }) {
+                    log::warn!("{command:?}: {err}");
+                }
+            }
+            ViewportCommand::Title(title) => {
+                window.set_title(&title);
+            }
+            ViewportCommand::Transparent(v) => window.set_transparent(v),
+            ViewportCommand::Visible(v) => window.set_visible(v),
+            ViewportCommand::OuterPosition(pos) => {
+                window.set_outer_position(LogicalPosition::new(pos.x, pos.y));
+            }
+            ViewportCommand::MinInnerSize(s) => {
+                window.set_min_inner_size(
+                    (s.is_finite() && s != Vec2::ZERO).then_some(LogicalSize::new(s.x, s.y)),
+                );
+            }
+            ViewportCommand::MaxInnerSize(s) => {
+                window.set_max_inner_size(
+                    (s.is_finite() && s != Vec2::INFINITY).then_some(LogicalSize::new(s.x, s.y)),
+                );
+            }
+            ViewportCommand::ResizeIncrements(s) => {
+                window.set_resize_increments(s.map(|s| LogicalSize::new(s.x, s.y)));
+            }
+            ViewportCommand::Resizable(v) => window.set_resizable(v),
+            ViewportCommand::EnableButtons {
+                close,
+                minimized,
+                maximize,
+            } => window.set_enabled_buttons(
+                if close {
+                    WindowButtons::CLOSE
+                } else {
+                    WindowButtons::empty()
+                } | if minimized {
+                    WindowButtons::MINIMIZE
+                } else {
+                    WindowButtons::empty()
+                } | if maximize {
+                    WindowButtons::MAXIMIZE
+                } else {
+                    WindowButtons::empty()
+                },
+            ),
+            ViewportCommand::Minimized(v) => {
+                window.set_minimized(v);
+                info.minimized = Some(v);
+            }
+            ViewportCommand::Maximized(v) => {
+                window.set_maximized(v);
+                info.maximized = Some(v);
+            }
+            ViewportCommand::Fullscreen(v) => {
+                window.set_fullscreen(v.then_some(winit::window::Fullscreen::Borderless(None)));
+            }
+            ViewportCommand::Decorations(v) => window.set_decorations(v),
+            ViewportCommand::WindowLevel(l) => window.set_window_level(match l {
+                egui::viewport::WindowLevel::AlwaysOnBottom => WindowLevel::AlwaysOnBottom,
+                egui::viewport::WindowLevel::AlwaysOnTop => WindowLevel::AlwaysOnTop,
+                egui::viewport::WindowLevel::Normal => WindowLevel::Normal,
+            }),
+            ViewportCommand::WindowIcon(icon) => {
+                window.set_window_icon(icon.map(|icon| {
+                    winit::window::Icon::from_rgba(
+                        icon.as_raw().to_owned(),
+                        icon.width() as u32,
+                        icon.height() as u32,
+                    )
+                    .expect("Invalid ICON data!")
+                }));
+            }
+            ViewportCommand::IMEPosition(pos) => {
+                window.set_ime_position(LogicalPosition::new(pos.x, pos.y));
+            }
+            ViewportCommand::IMEAllowed(v) => window.set_ime_allowed(v),
+            ViewportCommand::IMEPurpose(p) => window.set_ime_purpose(match p {
+                egui::viewport::IMEPurpose::Password => winit::window::ImePurpose::Password,
+                egui::viewport::IMEPurpose::Terminal => winit::window::ImePurpose::Terminal,
+                egui::viewport::IMEPurpose::Normal => winit::window::ImePurpose::Normal,
+            }),
+            ViewportCommand::Focus => {
+                if !window.has_focus() {
+                    window.focus_window();
+                }
+            }
+            ViewportCommand::RequestUserAttention(a) => {
+                window.request_user_attention(match a {
+                    egui::UserAttentionType::Reset => None,
+                    egui::UserAttentionType::Critical => {
+                        Some(winit::window::UserAttentionType::Critical)
+                    }
+                    egui::UserAttentionType::Informational => {
+                        Some(winit::window::UserAttentionType::Informational)
+                    }
+                });
+            }
+            ViewportCommand::SetTheme(t) => window.set_theme(match t {
+                egui::SystemTheme::Light => Some(winit::window::Theme::Light),
+                egui::SystemTheme::Dark => Some(winit::window::Theme::Dark),
+                egui::SystemTheme::SystemDefault => None,
+            }),
+            ViewportCommand::ContentProtected(v) => window.set_content_protected(v),
+            ViewportCommand::CursorPosition(pos) => {
+                if let Err(err) = window.set_cursor_position(LogicalPosition::new(pos.x, pos.y)) {
+                    log::warn!("{command:?}: {err}");
+                }
+            }
+            ViewportCommand::CursorGrab(o) => {
+                if let Err(err) = window.set_cursor_grab(match o {
+                    egui::viewport::CursorGrab::None => CursorGrabMode::None,
+                    egui::viewport::CursorGrab::Confined => CursorGrabMode::Confined,
+                    egui::viewport::CursorGrab::Locked => CursorGrabMode::Locked,
+                }) {
+                    log::warn!("{command:?}: {err}");
+                }
+            }
+            ViewportCommand::CursorVisible(v) => window.set_cursor_visible(v),
+            ViewportCommand::CursorHitTest(v) => {
+                if let Err(err) = window.set_cursor_hittest(v) {
+                    log::warn!("{command:?}: {err}");
+                }
+            }
+            ViewportCommand::Screenshot => {
+                *screenshot_requested = true;
+            }
+        }
+    }
+}
+
+pub fn create_winit_window_builder(builder: &ViewportBuilder) -> winit::window::WindowBuilder {
+    crate::profile_function!();
+
+    let mut window_builder = winit::window::WindowBuilder::new()
+        .with_title(
+            builder
+                .title
+                .clone()
+                .unwrap_or_else(|| "egui window".to_owned()),
+        )
+        .with_transparent(builder.transparent.unwrap_or(false))
+        .with_decorations(builder.decorations.unwrap_or(true))
+        .with_resizable(builder.resizable.unwrap_or(true))
+        .with_visible(builder.visible.unwrap_or(true))
+        .with_maximized(builder.maximized.unwrap_or(false))
+        .with_fullscreen(
+            builder
+                .fullscreen
+                .and_then(|e| e.then_some(winit::window::Fullscreen::Borderless(None))),
+        )
+        .with_enabled_buttons({
+            let mut buttons = WindowButtons::empty();
+            if builder.minimize_button.unwrap_or(true) {
+                buttons |= WindowButtons::MINIMIZE;
+            }
+            if builder.maximize_button.unwrap_or(true) {
+                buttons |= WindowButtons::MAXIMIZE;
+            }
+            if builder.close_button.unwrap_or(true) {
+                buttons |= WindowButtons::CLOSE;
+            }
+            buttons
+        })
+        .with_active(builder.active.unwrap_or(true));
+
+    if let Some(inner_size) = builder.inner_size {
+        window_builder = window_builder
+            .with_inner_size(winit::dpi::LogicalSize::new(inner_size.x, inner_size.y));
+    }
+
+    if let Some(min_inner_size) = builder.min_inner_size {
+        window_builder = window_builder.with_min_inner_size(winit::dpi::LogicalSize::new(
+            min_inner_size.x,
+            min_inner_size.y,
+        ));
+    }
+
+    if let Some(max_inner_size) = builder.max_inner_size {
+        window_builder = window_builder.with_max_inner_size(winit::dpi::LogicalSize::new(
+            max_inner_size.x,
+            max_inner_size.y,
+        ));
+    }
+
+    if let Some(position) = builder.position {
+        window_builder =
+            window_builder.with_position(winit::dpi::LogicalPosition::new(position.x, position.y));
+    }
+
+    if let Some(icon) = builder.icon.clone() {
+        window_builder = window_builder.with_window_icon(Some(
+            winit::window::Icon::from_rgba(
+                icon.as_raw().to_owned(),
+                icon.width() as u32,
+                icon.height() as u32,
+            )
+            .expect("Invalid Icon Data!"),
+        ));
+    }
+
+    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    if let Some(name) = builder.name.clone() {
+        use winit::platform::wayland::WindowBuilderExtWayland as _;
+        window_builder = window_builder.with_name(name.0, name.1);
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(enable) = builder.drag_and_drop {
+        use winit::platform::windows::WindowBuilderExtWindows as _;
+        window_builder = window_builder.with_drag_and_drop(enable);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::WindowBuilderExtMacOS as _;
+        window_builder = window_builder
+            .with_title_hidden(builder.title_hidden.unwrap_or(false))
+            .with_titlebar_transparent(builder.titlebar_transparent.unwrap_or(false))
+            .with_fullsize_content_view(builder.fullsize_content_view.unwrap_or(false));
+    }
+
+    // TODO: implement `ViewportBuilder::hittest`
+    // Is not implemented because winit in his current state will not allow to set cursor_hittest on a `WindowBuilder`
+
+    window_builder
+}
+
+// ---------------------------------------------------------------------------
+
+mod profiling_scopes {
+    #![allow(unused_macros)]
+    #![allow(unused_imports)]
+
+    /// Profiling macro for feature "puffin"
+    macro_rules! profile_function {
+        ($($arg: tt)*) => {
+            #[cfg(feature = "puffin")]
+            #[cfg(not(target_arch = "wasm32"))] // Disabled on web because of the coarse 1ms clock resolution there.
+            puffin::profile_function!($($arg)*);
+        };
+    }
+    pub(crate) use profile_function;
+
+    /// Profiling macro for feature "puffin"
+    macro_rules! profile_scope {
+        ($($arg: tt)*) => {
+            #[cfg(feature = "puffin")]
+            #[cfg(not(target_arch = "wasm32"))] // Disabled on web because of the coarse 1ms clock resolution there.
+            puffin::profile_scope!($($arg)*);
+        };
+    }
+    pub(crate) use profile_scope;
 }
 
 #[allow(unused_imports)]
-pub(crate) use profile_function;
-
-/// Profiling macro for feature "puffin"
-#[allow(unused_macros)]
-macro_rules! profile_scope {
-    ($($arg: tt)*) => {
-        #[cfg(feature = "puffin")]
-        puffin::profile_scope!($($arg)*);
-    };
-}
-
-#[allow(unused_imports)]
-pub(crate) use profile_scope;
+pub(crate) use profiling_scopes::*;
+use winit::{
+    dpi::{LogicalPosition, LogicalSize},
+    window::{CursorGrabMode, Window, WindowButtons, WindowLevel},
+};

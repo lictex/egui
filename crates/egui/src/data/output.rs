@@ -1,24 +1,14 @@
 //! All the data egui returns to the backend at the end of each frame.
 
-use crate::WidgetType;
+use crate::{ViewportIdMap, ViewportOutput, WidgetType};
 
 /// What egui emits each frame from [`crate::Context::run`].
 ///
 /// The backend should use this.
-#[derive(Clone, Default, PartialEq)]
+#[derive(Clone, Default)]
 pub struct FullOutput {
     /// Non-rendering related output.
     pub platform_output: PlatformOutput,
-
-    /// If `Duration::is_zero()`, egui is requesting immediate repaint (i.e. on the next frame).
-    ///
-    /// This happens for instance when there is an animation, or if a user has called `Context::request_repaint()`.
-    ///
-    /// If `Duration` is greater than zero, egui wants to be repainted at or before the specified
-    /// duration elapses. when in reactive mode, egui spends forever waiting for input and only then,
-    /// will it repaint itself. this can be used to make sure that backend will only wait for a
-    /// specified amount of time, and repaint egui without any new input.
-    pub repaint_after: std::time::Duration,
 
     /// Texture changes since last frame (including the font texture).
     ///
@@ -30,6 +20,14 @@ pub struct FullOutput {
     ///
     /// You can use [`crate::Context::tessellate`] to turn this into triangles.
     pub shapes: Vec<epaint::ClippedShape>,
+
+    /// The number of physical pixels per logical ui point, for the viewport that was updated.
+    ///
+    /// You can pass this to [`crate::Context::tessellate`] together with [`Self::shapes`].
+    pub pixels_per_point: f32,
+
+    /// All the active viewports, including the root.
+    pub viewport_output: ViewportIdMap<ViewportOutput>,
 }
 
 impl FullOutput {
@@ -37,15 +35,27 @@ impl FullOutput {
     pub fn append(&mut self, newer: Self) {
         let Self {
             platform_output,
-            repaint_after,
             textures_delta,
             shapes,
+            pixels_per_point,
+            viewport_output: viewports,
         } = newer;
 
         self.platform_output.append(platform_output);
-        self.repaint_after = repaint_after; // if the last frame doesn't need a repaint, then we don't need to repaint
         self.textures_delta.append(textures_delta);
         self.shapes = shapes; // Only paint the latest
+        self.pixels_per_point = pixels_per_point; // Use latest
+
+        for (id, new_viewport) in viewports {
+            match self.viewport_output.entry(id) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(new_viewport);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().append(new_viewport);
+                }
+            }
+        }
     }
 }
 
@@ -84,15 +94,22 @@ pub struct PlatformOutput {
     pub mutable_text_under_cursor: bool,
 
     /// Screen-space position of text edit cursor (used for IME).
+    ///
+    /// Iff `Some`, the user is editing text.
     pub text_cursor_pos: Option<crate::Pos2>,
 
+    /// The difference in the widget tree since last frame.
+    ///
+    /// NOTE: this needs to be per-viewport.
     #[cfg(feature = "accesskit")]
     pub accesskit_update: Option<accesskit::TreeUpdate>,
 }
 
 impl PlatformOutput {
     /// Open the given url in a web browser.
+    ///
     /// If egui is running in a browser, the same tab will be reused.
+    #[deprecated = "Use Context::open_url instead"]
     pub fn open_url(&mut self, url: impl ToString) {
         self.open_url = Some(OpenUrl::same_tab(url));
     }
@@ -100,7 +117,7 @@ impl PlatformOutput {
     /// This can be used by a text-to-speech system to describe the events (if any).
     pub fn events_description(&self) -> String {
         // only describe last event:
-        if let Some(event) = self.events.iter().rev().next() {
+        if let Some(event) = self.events.iter().next_back() {
             match event {
                 OutputEvent::Clicked(widget_info)
                 | OutputEvent::DoubleClicked(widget_info)
@@ -156,6 +173,8 @@ impl PlatformOutput {
 }
 
 /// What URL to open, and how.
+///
+/// Use with [`crate::Context::open_url`].
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct OpenUrl {
@@ -191,6 +210,7 @@ impl OpenUrl {
 ///
 /// [user_attention_type]: https://docs.rs/winit/latest/winit/window/enum.UserAttentionType.html
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum UserAttentionType {
     /// Request an elevated amount of animations and flair for the window and the task bar or dock icon.
     Critical,
@@ -417,12 +437,12 @@ impl OutputEvent {
 impl std::fmt::Debug for OutputEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Clicked(wi) => write!(f, "Clicked({:?})", wi),
-            Self::DoubleClicked(wi) => write!(f, "DoubleClicked({:?})", wi),
-            Self::TripleClicked(wi) => write!(f, "TripleClicked({:?})", wi),
-            Self::FocusGained(wi) => write!(f, "FocusGained({:?})", wi),
-            Self::TextSelectionChanged(wi) => write!(f, "TextSelectionChanged({:?})", wi),
-            Self::ValueChanged(wi) => write!(f, "ValueChanged({:?})", wi),
+            Self::Clicked(wi) => write!(f, "Clicked({wi:?})"),
+            Self::DoubleClicked(wi) => write!(f, "DoubleClicked({wi:?})"),
+            Self::TripleClicked(wi) => write!(f, "TripleClicked({wi:?})"),
+            Self::FocusGained(wi) => write!(f, "FocusGained({wi:?})"),
+            Self::TextSelectionChanged(wi) => write!(f, "TextSelectionChanged({wi:?})"),
+            Self::ValueChanged(wi) => write!(f, "ValueChanged({wi:?})"),
         }
     }
 }
@@ -609,28 +629,27 @@ impl WidgetInfo {
         if let Some(selected) = selected {
             if *typ == WidgetType::Checkbox {
                 let state = if *selected { "checked" } else { "unchecked" };
-                description = format!("{} {}", state, description);
+                description = format!("{state} {description}");
             } else {
                 description += if *selected { "selected" } else { "" };
             };
         }
 
         if let Some(label) = label {
-            description = format!("{}: {}", label, description);
+            description = format!("{label}: {description}");
         }
 
         if typ == &WidgetType::TextEdit {
-            let text;
-            if let Some(text_value) = text_value {
+            let text = if let Some(text_value) = text_value {
                 if text_value.is_empty() {
-                    text = "blank".into();
+                    "blank".into()
                 } else {
-                    text = text_value.to_string();
+                    text_value.to_string()
                 }
             } else {
-                text = "blank".into();
-            }
-            description = format!("{}: {}", text, description);
+                "blank".into()
+            };
+            description = format!("{text}: {description}");
         }
 
         if let Some(value) = value {

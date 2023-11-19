@@ -6,6 +6,7 @@ use crate::{epi, App};
 use super::{now_sec, web_painter::WebPainter, NeedRepaint};
 
 pub struct AppRunner {
+    web_options: crate::WebOptions,
     pub(crate) frame: epi::Frame,
     egui_ctx: egui::Context,
     painter: super::ActiveWebPainter,
@@ -48,7 +49,6 @@ impl AppRunner {
             },
             system_theme,
             cpu_usage: None,
-            native_pixels_per_point: Some(super::native_pixels_per_point()),
         };
         let storage = LocalStorage::default();
 
@@ -56,7 +56,7 @@ impl AppRunner {
         egui_ctx.set_os(egui::os::OperatingSystem::from_user_agent(
             &super::user_agent().unwrap_or_default(),
         ));
-        super::load_memory(&egui_ctx);
+        super::storage::load_memory(&egui_ctx);
 
         let theme = system_theme.unwrap_or(web_options.default_theme);
         egui_ctx.set_visuals(theme.egui_visuals());
@@ -77,7 +77,6 @@ impl AppRunner {
 
         let frame = epi::Frame {
             info,
-            output: Default::default(),
             storage: Some(Box::new(storage)),
 
             #[cfg(feature = "glow")]
@@ -93,11 +92,12 @@ impl AppRunner {
         {
             let needs_repaint = needs_repaint.clone();
             egui_ctx.set_request_repaint_callback(move |info| {
-                needs_repaint.repaint_after(info.after.as_secs_f64());
+                needs_repaint.repaint_after(info.delay.as_secs_f64());
             });
         }
 
         let mut runner = Self {
+            web_options,
             frame,
             egui_ctx,
             painter,
@@ -112,6 +112,7 @@ impl AppRunner {
         };
 
         runner.input.raw.max_texture_side = Some(runner.painter.max_texture_side());
+        runner.input.raw.native_pixels_per_point = Some(super::native_pixels_per_point());
 
         Ok(runner)
     }
@@ -140,7 +141,7 @@ impl AppRunner {
 
     pub fn save(&mut self) {
         if self.app.persist_egui_memory() {
-            super::save_memory(&self.egui_ctx);
+            super::storage::save_memory(&self.egui_ctx);
         }
         if let Some(storage) = self.frame.storage_mut() {
             self.app.save(storage);
@@ -168,13 +169,11 @@ impl AppRunner {
         self.painter.destroy();
     }
 
-    /// Returns how long to wait until the next repaint.
-    ///
     /// Call [`Self::paint`] later to paint
-    pub fn logic(&mut self) -> (std::time::Duration, Vec<egui::ClippedPrimitive>) {
+    pub fn logic(&mut self) -> Vec<egui::ClippedPrimitive> {
         let frame_start = now_sec();
 
-        super::resize_canvas_to_screen_size(self.canvas_id(), self.app.max_size_points());
+        super::resize_canvas_to_screen_size(self.canvas_id(), self.web_options.max_size_points);
         let canvas_size = super::canvas_size_in_points(self.canvas_id());
         let raw_input = self.input.new_frame(canvas_size);
 
@@ -183,23 +182,31 @@ impl AppRunner {
         });
         let egui::FullOutput {
             platform_output,
-            repaint_after,
             textures_delta,
             shapes,
+            pixels_per_point,
+            viewport_output,
         } = full_output;
+
+        if viewport_output.len() > 1 {
+            log::warn!("Multiple viewports not yet supported on the web");
+        }
+        for viewport_output in viewport_output.values() {
+            for command in &viewport_output.commands {
+                // TODO(emilk): handle some of the commands
+                log::warn!(
+                    "Unhandled egui viewport command: {command:?} - not implemented in web backend"
+                );
+            }
+        }
 
         self.handle_platform_output(platform_output);
         self.textures_delta.append(textures_delta);
-        let clipped_primitives = self.egui_ctx.tessellate(shapes);
-
-        {
-            let app_output = self.frame.take_app_output();
-            let epi::backend::AppOutput {} = app_output;
-        }
+        let clipped_primitives = self.egui_ctx.tessellate(shapes, pixels_per_point);
 
         self.frame.info.cpu_usage = Some((now_sec() - frame_start) as f32);
 
-        (repaint_after, clipped_primitives)
+        clipped_primitives
     }
 
     /// Paint the results of the last call to [`Self::logic`].
@@ -262,11 +269,11 @@ struct LocalStorage {}
 
 impl epi::Storage for LocalStorage {
     fn get_string(&self, key: &str) -> Option<String> {
-        super::local_storage_get(key)
+        super::storage::local_storage_get(key)
     }
 
     fn set_string(&mut self, key: &str, value: String) {
-        super::local_storage_set(key, &value);
+        super::storage::local_storage_set(key, &value);
     }
 
     fn flush(&mut self) {}

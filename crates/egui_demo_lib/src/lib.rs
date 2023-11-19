@@ -15,10 +15,16 @@
 mod color_test;
 mod demo;
 pub mod easy_mark;
-pub mod syntax_highlighting;
 
 pub use color_test::ColorTest;
 pub use demo::DemoWindows;
+
+/// View some Rust code with syntax highlighting and selection.
+pub(crate) fn rust_view_ui(ui: &mut egui::Ui, code: &str) {
+    let language = "rs";
+    let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(ui.ctx());
+    egui_extras::syntax_highlighting::code_view_ui(ui, &theme, code, language);
+}
 
 // ----------------------------------------------------------------------------
 
@@ -71,7 +77,7 @@ fn test_egui_e2e() {
         let full_output = ctx.run(raw_input.clone(), |ctx| {
             demo_windows.ui(ctx);
         });
-        let clipped_primitives = ctx.tessellate(full_output.shapes);
+        let clipped_primitives = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
         assert!(!clipped_primitives.is_empty());
     }
 }
@@ -90,7 +96,7 @@ fn test_egui_zero_window_size() {
         let full_output = ctx.run(raw_input.clone(), |ctx| {
             demo_windows.ui(ctx);
         });
-        let clipped_primitives = ctx.tessellate(full_output.shapes);
+        let clipped_primitives = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
         assert!(
             clipped_primitives.is_empty(),
             "There should be nothing to show, has at least one primitive with clip_rect: {:?}",

@@ -3,7 +3,7 @@
 //! | fixed size | all available space/minimum | 30% of available width | fixed size |
 //! Takes all available height, so if you want something below the table, put it in a strip.
 
-use egui::{Align, NumExt as _, Rect, Response, ScrollArea, Ui, Vec2};
+use egui::{Align, NumExt as _, Rangef, Rect, Response, ScrollArea, Ui, Vec2, Vec2b};
 
 use crate::{
     layout::{CellDirection, CellSize},
@@ -28,7 +28,9 @@ enum InitialColumnSize {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Column {
     initial_width: InitialColumnSize,
-    width_range: (f32, f32),
+
+    width_range: Rangef,
+
     /// Clip contents if too narrow?
     clip: bool,
 
@@ -78,7 +80,7 @@ impl Column {
     fn new(initial_width: InitialColumnSize) -> Self {
         Self {
             initial_width,
-            width_range: (0.0, f32::INFINITY),
+            width_range: Rangef::new(0.0, f32::INFINITY),
             resizable: None,
             clip: false,
         }
@@ -88,6 +90,7 @@ impl Column {
     ///
     /// If you don't call this, the fallback value of
     /// [`TableBuilder::resizable`] is used (which by default is `false`).
+    #[inline]
     pub fn resizable(mut self, resizable: bool) -> Self {
         self.resizable = Some(resizable);
         self
@@ -101,6 +104,7 @@ impl Column {
     /// If you turn on clipping you should also consider calling [`Self::at_least`].
     ///
     /// Default: `false`.
+    #[inline]
     pub fn clip(mut self, clip: bool) -> Self {
         self.clip = clip;
         self
@@ -109,22 +113,25 @@ impl Column {
     /// Won't shrink below this width (in points).
     ///
     /// Default: 0.0
+    #[inline]
     pub fn at_least(mut self, minimum: f32) -> Self {
-        self.width_range.0 = minimum;
+        self.width_range.min = minimum;
         self
     }
 
     /// Won't grow above this width (in points).
     ///
     /// Default: [`f32::INFINITY`]
+    #[inline]
     pub fn at_most(mut self, maximum: f32) -> Self {
-        self.width_range.1 = maximum;
+        self.width_range.max = maximum;
         self
     }
 
     /// Allowed range of movement (in points), if in a resizable [`Table`](crate::table::Table).
-    pub fn range(mut self, range: std::ops::RangeInclusive<f32>) -> Self {
-        self.width_range = (*range.start(), *range.end());
+    #[inline]
+    pub fn range(mut self, range: impl Into<Rangef>) -> Self {
+        self.width_range = range.into();
         self
     }
 
@@ -146,8 +153,8 @@ fn to_sizing(columns: &[Column]) -> crate::sizing::Sizing {
             InitialColumnSize::Automatic(suggested_width) => Size::initial(suggested_width),
             InitialColumnSize::Remainder => Size::remainder(),
         }
-        .at_least(column.width_range.0)
-        .at_most(column.width_range.1);
+        .at_least(column.width_range.min)
+        .at_most(column.width_range.max);
         sizing.add(size);
     }
     sizing
@@ -157,24 +164,26 @@ fn to_sizing(columns: &[Column]) -> crate::sizing::Sizing {
 
 struct TableScrollOptions {
     vscroll: bool,
+    drag_to_scroll: bool,
     stick_to_bottom: bool,
     scroll_to_row: Option<(usize, Option<Align>)>,
     scroll_offset_y: Option<f32>,
     min_scrolled_height: f32,
     max_scroll_height: f32,
-    auto_shrink: [bool; 2],
+    auto_shrink: Vec2b,
 }
 
 impl Default for TableScrollOptions {
     fn default() -> Self {
         Self {
             vscroll: true,
+            drag_to_scroll: true,
             stick_to_bottom: false,
             scroll_to_row: None,
             scroll_offset_y: None,
             min_scrolled_height: 200.0,
             max_scroll_height: 800.0,
-            auto_shrink: [true; 2],
+            auto_shrink: Vec2b::TRUE,
         }
     }
 }
@@ -240,6 +249,7 @@ impl<'a> TableBuilder<'a> {
     /// Enable striped row background for improved readability.
     ///
     /// Default is whatever is in [`egui::Visuals::striped`].
+    #[inline]
     pub fn striped(mut self, striped: bool) -> Self {
         self.striped = Some(striped);
         self
@@ -255,12 +265,14 @@ impl<'a> TableBuilder<'a> {
     /// (and instead use up the remainder).
     ///
     /// Default is `false`.
+    #[inline]
     pub fn resizable(mut self, resizable: bool) -> Self {
         self.resizable = resizable;
         self
     }
 
     /// Enable vertical scrolling in body (default: `true`)
+    #[inline]
     pub fn vscroll(mut self, vscroll: bool) -> Self {
         self.scroll_options.vscroll = vscroll;
         self
@@ -271,9 +283,19 @@ impl<'a> TableBuilder<'a> {
         self.vscroll(vscroll)
     }
 
+    /// Enables scrolling the table's contents using mouse drag (default: `true`).
+    ///
+    /// See [`ScrollArea::drag_to_scroll`] for more.
+    #[inline]
+    pub fn drag_to_scroll(mut self, drag_to_scroll: bool) -> Self {
+        self.scroll_options.drag_to_scroll = drag_to_scroll;
+        self
+    }
+
     /// Should the scroll handle stick to the bottom position even as the content size changes
     /// dynamically? The scroll handle remains stuck until manually changed, and will become stuck
     /// once again when repositioned to the bottom. Default: `false`.
+    #[inline]
     pub fn stick_to_bottom(mut self, stick: bool) -> Self {
         self.scroll_options.stick_to_bottom = stick;
         self
@@ -286,6 +308,7 @@ impl<'a> TableBuilder<'a> {
     /// If `align` is `None`, the table will scroll just enough to bring the cursor into view.
     ///
     /// See also: [`Self::vertical_scroll_offset`].
+    #[inline]
     pub fn scroll_to_row(mut self, row: usize, align: Option<Align>) -> Self {
         self.scroll_options.scroll_to_row = Some((row, align));
         self
@@ -294,6 +317,7 @@ impl<'a> TableBuilder<'a> {
     /// Set the vertical scroll offset position, in points.
     ///
     /// See also: [`Self::scroll_to_row`].
+    #[inline]
     pub fn vertical_scroll_offset(mut self, offset: f32) -> Self {
         self.scroll_options.scroll_offset_y = Some(offset);
         self
@@ -305,6 +329,7 @@ impl<'a> TableBuilder<'a> {
     /// (and so we don't require scroll bars).
     ///
     /// Default: `200.0`.
+    #[inline]
     pub fn min_scrolled_height(mut self, min_scrolled_height: f32) -> Self {
         self.scroll_options.min_scrolled_height = min_scrolled_height;
         self
@@ -314,6 +339,7 @@ impl<'a> TableBuilder<'a> {
     ///
     /// In other words: add scroll-bars when this height is reached.
     /// Default: `800.0`.
+    #[inline]
     pub fn max_scroll_height(mut self, max_scroll_height: f32) -> Self {
         self.scroll_options.max_scroll_height = max_scroll_height;
         self
@@ -323,27 +349,31 @@ impl<'a> TableBuilder<'a> {
     /// * If true, add blank space outside the table, keeping the table small.
     /// * If false, add blank space inside the table, expanding the table to fit the containing ui.
     ///
-    /// Default: `[true; 2]`.
+    /// Default: `true`.
     ///
     /// See [`ScrollArea::auto_shrink`] for more.
-    pub fn auto_shrink(mut self, auto_shrink: [bool; 2]) -> Self {
-        self.scroll_options.auto_shrink = auto_shrink;
+    #[inline]
+    pub fn auto_shrink(mut self, auto_shrink: impl Into<Vec2b>) -> Self {
+        self.scroll_options.auto_shrink = auto_shrink.into();
         self
     }
 
     /// What layout should we use for the individual cells?
+    #[inline]
     pub fn cell_layout(mut self, cell_layout: egui::Layout) -> Self {
         self.cell_layout = cell_layout;
         self
     }
 
     /// Allocate space for one column.
+    #[inline]
     pub fn column(mut self, column: Column) -> Self {
         self.columns.push(column);
         self
     }
 
     /// Allocate space for several columns at once.
+    #[inline]
     pub fn columns(mut self, column: Column, count: usize) -> Self {
         for _ in 0..count {
             self.columns.push(column);
@@ -354,9 +384,9 @@ impl<'a> TableBuilder<'a> {
     fn available_width(&self) -> f32 {
         self.ui.available_rect_before_wrap().width()
             - if self.scroll_options.vscroll {
-                self.ui.spacing().scroll_bar_inner_margin
-                    + self.ui.spacing().scroll_bar_width
-                    + self.ui.spacing().scroll_bar_outer_margin
+                self.ui.spacing().scroll.bar_inner_margin
+                    + self.ui.spacing().scroll.bar_width
+                    + self.ui.spacing().scroll.bar_outer_margin
             } else {
                 0.0
             }
@@ -511,8 +541,10 @@ pub struct Table<'a> {
     columns: Vec<Column>,
     available_width: f32,
     state: TableState,
+
     /// Accumulated maximum used widths for each column.
     max_used_widths: Vec<f32>,
+
     first_frame_auto_size_columns: bool,
     resizable: bool,
     striped: bool,
@@ -551,6 +583,7 @@ impl<'a> Table<'a> {
 
         let TableScrollOptions {
             vscroll,
+            drag_to_scroll,
             stick_to_bottom,
             scroll_to_row,
             scroll_offset_y,
@@ -562,7 +595,8 @@ impl<'a> Table<'a> {
         let avail_rect = ui.available_rect_before_wrap();
 
         let mut scroll_area = ScrollArea::new([false, vscroll])
-            .auto_shrink([true; 2])
+            .auto_shrink(true)
+            .drag_to_scroll(drag_to_scroll)
             .stick_to_bottom(stick_to_bottom)
             .min_scrolled_height(min_scrolled_height)
             .max_height(max_scroll_height)
@@ -598,13 +632,13 @@ impl<'a> Table<'a> {
 
                 if scroll_to_row.is_some() && scroll_to_y_range.is_none() {
                     // TableBody::row didn't find the right row, so scroll to the bottom:
-                    scroll_to_y_range = Some((f32::INFINITY, f32::INFINITY));
+                    scroll_to_y_range = Some(Rangef::new(f32::INFINITY, f32::INFINITY));
                 }
             });
 
-            if let Some((min_y, max_y)) = scroll_to_y_range {
+            if let Some(y_range) = scroll_to_y_range {
                 let x = 0.0; // ignored, we only have vertical scrolling
-                let rect = egui::Rect::from_min_max(egui::pos2(x, min_y), egui::pos2(x, max_y));
+                let rect = egui::Rect::from_x_y_ranges(x..=x, y_range);
                 let align = scroll_to_row.and_then(|(_, a)| a);
                 ui.scroll_to_rect(rect, align);
             }
@@ -617,14 +651,14 @@ impl<'a> Table<'a> {
         for (i, column_width) in state.column_widths.iter_mut().enumerate() {
             let column = &columns[i];
             let column_is_resizable = column.resizable.unwrap_or(resizable);
-            let (min_width, max_width) = column.width_range;
+            let width_range = column.width_range;
 
             if !column.clip {
                 // Unless we clip we don't want to shrink below the
                 // size that was actually used:
                 *column_width = column_width.at_least(max_used_widths[i]);
             }
-            *column_width = column_width.clamp(min_width, max_width);
+            *column_width = width_range.clamp(*column_width);
 
             let is_last_column = i + 1 == columns.len();
 
@@ -632,8 +666,10 @@ impl<'a> Table<'a> {
                 // If the last column is 'remainder', then let it fill the remainder!
                 let eps = 0.1; // just to avoid some rounding errors.
                 *column_width = available_width - eps;
-                *column_width = column_width.at_least(max_used_widths[i]);
-                *column_width = column_width.clamp(min_width, max_width);
+                if !column.clip {
+                    *column_width = column_width.at_least(max_used_widths[i]);
+                }
+                *column_width = width_range.clamp(*column_width);
                 break;
             }
 
@@ -641,7 +677,7 @@ impl<'a> Table<'a> {
 
             if column.is_auto() && (first_frame_auto_size_columns || !column_is_resizable) {
                 *column_width = max_used_widths[i];
-                *column_width = column_width.clamp(min_width, max_width);
+                *column_width = width_range.clamp(*column_width);
             } else if column_is_resizable {
                 let column_resize_id = ui.id().with("resize_column").with(i);
 
@@ -656,7 +692,7 @@ impl<'a> Table<'a> {
                 if resize_response.double_clicked() {
                     // Resize to the minimum of what is needed.
 
-                    *column_width = max_used_widths[i].clamp(min_width, max_width);
+                    *column_width = width_range.clamp(max_used_widths[i]);
                 } else if resize_response.dragged() {
                     if let Some(pointer) = ui.ctx().pointer_latest_pos() {
                         let mut new_width = *column_width + pointer.x - x;
@@ -671,7 +707,7 @@ impl<'a> Table<'a> {
                             new_width =
                                 new_width.at_least(max_used_widths[i] - max_shrinkage_per_frame);
                         }
-                        new_width = new_width.clamp(min_width, max_width);
+                        new_width = width_range.clamp(new_width);
 
                         let x = x - *column_width + new_width;
                         (p0.x, p1.x) = (x, x);
@@ -731,7 +767,7 @@ pub struct TableBody<'a> {
 
     /// If we find the correct row to scroll to,
     /// this is set to the y-range of the row.
-    scroll_to_y_range: &'a mut Option<(f32, f32)>,
+    scroll_to_y_range: &'a mut Option<Rangef>,
 }
 
 impl<'a> TableBody<'a> {
@@ -779,7 +815,7 @@ impl<'a> TableBody<'a> {
         let bottom_y = self.layout.cursor.y;
 
         if Some(self.row_nr) == self.scroll_to_row {
-            *self.scroll_to_y_range = Some((top_y, bottom_y));
+            *self.scroll_to_y_range = Some(Rangef::new(top_y, bottom_y));
         }
 
         self.row_nr += 1;
@@ -819,7 +855,7 @@ impl<'a> TableBody<'a> {
 
         if let Some(scroll_to_row) = self.scroll_to_row {
             let scroll_to_row = scroll_to_row.at_most(total_rows.saturating_sub(1)) as f32;
-            *self.scroll_to_y_range = Some((
+            *self.scroll_to_y_range = Some(Rangef::new(
                 self.layout.cursor.y + scroll_to_row * row_height_with_spacing,
                 self.layout.cursor.y + (scroll_to_row + 1.0) * row_height_with_spacing,
             ));
@@ -849,7 +885,7 @@ impl<'a> TableBody<'a> {
                     widths: self.widths,
                     max_used_widths: self.max_used_widths,
                     col_index: 0,
-                    striped: self.striped && idx % 2 == 0,
+                    striped: self.striped && (idx + self.row_nr) % 2 == 0,
                     height: row_height_sans_spacing,
                 },
             );
@@ -909,7 +945,7 @@ impl<'a> TableBody<'a> {
             cursor_y += (row_height + spacing.y) as f64;
 
             if Some(row_index) == self.scroll_to_row {
-                *self.scroll_to_y_range = Some((
+                *self.scroll_to_y_range = Some(Rangef::new(
                     (scroll_to_y_range_offset + old_cursor_y) as f32,
                     (scroll_to_y_range_offset + cursor_y) as f32,
                 ));
@@ -927,7 +963,7 @@ impl<'a> TableBody<'a> {
                         widths: self.widths,
                         max_used_widths: self.max_used_widths,
                         col_index: 0,
-                        striped: self.striped && row_index % 2 == 0,
+                        striped: self.striped && (row_index + self.row_nr) % 2 == 0,
                         height: row_height,
                     },
                 );
@@ -946,14 +982,14 @@ impl<'a> TableBody<'a> {
                     widths: self.widths,
                     max_used_widths: self.max_used_widths,
                     col_index: 0,
-                    striped: self.striped && row_index % 2 == 0,
+                    striped: self.striped && (row_index + self.row_nr) % 2 == 0,
                     height: row_height,
                 },
             );
             cursor_y += (row_height + spacing.y) as f64;
 
             if Some(row_index) == self.scroll_to_row {
-                *self.scroll_to_y_range = Some((
+                *self.scroll_to_y_range = Some(Rangef::new(
                     (scroll_to_y_range_offset + top_y) as f32,
                     (scroll_to_y_range_offset + cursor_y) as f32,
                 ));
@@ -972,7 +1008,7 @@ impl<'a> TableBody<'a> {
             let top_y = cursor_y;
             cursor_y += (row_height + spacing.y) as f64;
             if Some(row_index) == self.scroll_to_row {
-                *self.scroll_to_y_range = Some((
+                *self.scroll_to_y_range = Some(Rangef::new(
                     (scroll_to_y_range_offset + top_y) as f32,
                     (scroll_to_y_range_offset + cursor_y) as f32,
                 ));
@@ -981,10 +1017,8 @@ impl<'a> TableBody<'a> {
 
         if self.scroll_to_row.is_some() && self.scroll_to_y_range.is_none() {
             // Catch desire to scroll past the end:
-            *self.scroll_to_y_range = Some((
-                (scroll_to_y_range_offset + cursor_y) as f32,
-                (scroll_to_y_range_offset + cursor_y) as f32,
-            ));
+            *self.scroll_to_y_range =
+                Some(Rangef::point((scroll_to_y_range_offset + cursor_y) as f32));
         }
 
         if height_below_visible > 0.0 {
@@ -1013,8 +1047,10 @@ pub struct TableRow<'a, 'b> {
     layout: &'b mut StripLayout<'a>,
     columns: &'b [Column],
     widths: &'b [f32],
+
     /// grows during building with the maximum widths
     max_used_widths: &'b mut [f32],
+
     col_index: usize,
     striped: bool,
     height: f32,

@@ -35,7 +35,6 @@ pub fn pos_from_touch_event(
         // search for the touch we previously used for the position
         // (unfortunately, `event.touches()` is not a rust collection):
         (0..event.touches().length())
-            .into_iter()
             .map(|i| event.touches().get(i).unwrap())
             .find(|touch| egui::TouchId::from(touch.identifier()) == *touch_id_for_pos)
     } else {
@@ -68,7 +67,7 @@ pub fn push_touches(runner: &mut AppRunner, phase: egui::TouchPhase, event: &web
                 id: egui::TouchId::from(touch.identifier()),
                 phase,
                 pos: pos_from_touch(canvas_origin, &touch),
-                force: touch.force(),
+                force: Some(touch.force()),
             });
         }
     }
@@ -110,7 +109,7 @@ pub fn should_ignore_key(key: &str) -> bool {
         )
 }
 
-/// Web sends all all keys as strings, so it is up to us to figure out if it is
+/// Web sends all keys as strings, so it is up to us to figure out if it is
 /// a real text input or the name of a key.
 pub fn translate_key(key: &str) -> Option<egui::Key> {
     use egui::Key;

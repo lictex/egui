@@ -35,7 +35,9 @@ deny = [
 
 skip = [
     { name = "arrayvec" },            # old version via tiny-skiaz
+    { name = "base64" },              # small crate, old version from usvg
     { name = "libloading" },          # wgpu-hal itself depends on 0.8 while some of its dependencies, like ash and d3d12, depend on 0.7
+    { name = "memoffset" },           # tiny dependency
     { name = "nix" },                 # old version via winit
     { name = "redox_syscall" },       # old version via winit
     { name = "time" },                # old version pulled in by unmaintianed crate 'chrono'
@@ -45,10 +47,14 @@ skip = [
     { name = "windows_x86_64_msvc" }, # old version via glutin
     { name = "windows-sys" },         # old version via glutin
     { name = "windows" },             # old version via accesskit
+    { name = "spin" },                # old version via ring through rusttls and other libraries, newer for wgpu.
+    { name = "glow" },                # TODO(@wumpf): Old version use for glow backend right now, newer for wgpu. Updating this trickles out to updating winit.
+    { name = "glutin_wgl_sys" },      # TODO(@wumpf): As above
 ]
 skip-tree = [
-    { name = "criterion" }, # dev-dependency
-    { name = "rfd" },       # example dependency
+    { name = "criterion" },     # dev-dependency
+    { name = "foreign-types" }, # small crate. Old version via cocoa and core-graphics (winit).
+    { name = "rfd" },           # example dependency
 ]
 
 

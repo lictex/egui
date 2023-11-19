@@ -34,6 +34,24 @@ impl TextureFilterExt for egui::TextureFilter {
     }
 }
 
+#[derive(Debug)]
+pub struct PainterError(String);
+
+impl std::error::Error for PainterError {}
+
+impl std::fmt::Display for PainterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OpenGL: {}", self.0)
+    }
+}
+
+impl From<String> for PainterError {
+    #[inline]
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
 /// An OpenGL painter using [`glow`].
 ///
 /// This is responsible for painting egui and managing egui textures.
@@ -103,7 +121,7 @@ impl Painter {
         gl: Arc<glow::Context>,
         shader_prefix: &str,
         shader_version: Option<ShaderVersion>,
-    ) -> Result<Painter, String> {
+    ) -> Result<Painter, PainterError> {
         crate::profile_function!();
         crate::check_for_gl_error_even_in_release!(&gl, "before Painter::new");
 
@@ -121,7 +139,7 @@ impl Painter {
         if gl.version().major < 2 {
             // this checks on desktop that we are not using opengl 1.1 microsoft sw rendering context.
             // ShaderVersion::get fn will segfault due to SHADING_LANGUAGE_VERSION (added in gl2.0)
-            return Err("egui_glow requires opengl 2.0+. ".to_owned());
+            return Err(PainterError("egui_glow requires opengl 2.0+. ".to_owned()));
         }
 
         let max_texture_side = unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) } as usize;
@@ -305,6 +323,10 @@ impl Painter {
         (width_in_pixels, height_in_pixels)
     }
 
+    pub fn clear(&self, screen_size_in_pixels: [u32; 2], clear_color: [f32; 4]) {
+        clear(&self.gl, screen_size_in_pixels, clear_color);
+    }
+
     /// You are expected to have cleared the color buffer before calling this.
     pub fn paint_and_update_textures(
         &mut self,
@@ -314,6 +336,7 @@ impl Painter {
         textures_delta: &egui::TexturesDelta,
     ) {
         crate::profile_function!();
+
         for (id, image_delta) in &textures_delta.set {
             self.set_texture(*id, image_delta);
         }
@@ -370,25 +393,6 @@ impl Painter {
                 Primitive::Callback(callback) => {
                     if callback.rect.is_positive() {
                         crate::profile_scope!("callback");
-                        // Transform callback rect to physical pixels:
-                        let rect_min_x = pixels_per_point * callback.rect.min.x;
-                        let rect_min_y = pixels_per_point * callback.rect.min.y;
-                        let rect_max_x = pixels_per_point * callback.rect.max.x;
-                        let rect_max_y = pixels_per_point * callback.rect.max.y;
-
-                        let rect_min_x = rect_min_x.round() as i32;
-                        let rect_min_y = rect_min_y.round() as i32;
-                        let rect_max_x = rect_max_x.round() as i32;
-                        let rect_max_y = rect_max_y.round() as i32;
-
-                        unsafe {
-                            self.gl.viewport(
-                                rect_min_x,
-                                size_in_pixels.1 as i32 - rect_max_y,
-                                rect_max_x - rect_min_x,
-                                rect_max_y - rect_min_y,
-                            );
-                        }
 
                         let info = egui::PaintCallbackInfo {
                             viewport: callback.rect,
@@ -396,6 +400,16 @@ impl Painter {
                             pixels_per_point,
                             screen_size_px,
                         };
+
+                        let viewport_px = info.viewport_in_pixels();
+                        unsafe {
+                            self.gl.viewport(
+                                viewport_px.left_px.round() as _,
+                                viewport_px.from_bottom_px.round() as _,
+                                viewport_px.width_px.round() as _,
+                                viewport_px.height_px.round() as _,
+                            );
+                        }
 
                         if let Some(callback) = callback.callback.downcast_ref::<CallbackFn>() {
                             (callback.f)(info, self);
@@ -494,10 +508,13 @@ impl Painter {
                     "Mismatch between texture size and texel count"
                 );
 
-                let data: Vec<u8> = image
-                    .srgba_pixels(None)
-                    .flat_map(|a| a.to_array())
-                    .collect();
+                let data: Vec<u8> = {
+                    crate::profile_scope!("font -> sRGBA");
+                    image
+                        .srgba_pixels(None)
+                        .flat_map(|a| a.to_array())
+                        .collect()
+                };
 
                 self.upload_texture_srgb(delta.pos, image.size, delta.options, &data);
             }
@@ -511,6 +528,7 @@ impl Painter {
         options: egui::TextureOptions,
         data: &[u8],
     ) {
+        crate::profile_function!();
         assert_eq!(data.len(), w * h * 4);
         assert!(
             w <= self.max_texture_side && h <= self.max_texture_side,
@@ -561,6 +579,7 @@ impl Painter {
 
             let level = 0;
             if let Some([x, y]) = pos {
+                crate::profile_scope!("gl.tex_sub_image_2d");
                 self.gl.tex_sub_image_2d(
                     glow::TEXTURE_2D,
                     level,
@@ -575,6 +594,7 @@ impl Painter {
                 check_for_gl_error!(&self.gl, "tex_sub_image_2d");
             } else {
                 let border = 0;
+                crate::profile_scope!("gl.tex_image_2d");
                 self.gl.tex_image_2d(
                     glow::TEXTURE_2D,
                     level,
@@ -624,6 +644,8 @@ impl Painter {
     }
 
     pub fn read_screen_rgba(&self, [w, h]: [u32; 2]) -> egui::ColorImage {
+        crate::profile_function!();
+
         let mut pixels = vec![0_u8; (w * h * 4) as usize];
         unsafe {
             self.gl.read_pixels(
@@ -647,6 +669,8 @@ impl Painter {
     }
 
     pub fn read_screen_rgb(&self, [w, h]: [u32; 2]) -> Vec<u8> {
+        crate::profile_function!();
+
         let mut pixels = vec![0_u8; (w * h * 3) as usize];
         unsafe {
             self.gl.read_pixels(
