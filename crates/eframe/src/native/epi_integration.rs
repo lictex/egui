@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use winit::{event::TabletButton, event_loop::EventLoopWindowTarget};
+use winit::event_loop::EventLoopWindowTarget;
 
 use raw_window_handle::{HasRawDisplayHandle as _, HasRawWindowHandle as _};
 
@@ -300,7 +300,7 @@ impl EpiIntegration {
     pub fn on_event(
         &mut self,
         app: &mut dyn epi::App,
-        event: &winit::event::WindowEvent<'_>,
+        event: &winit::event::WindowEvent,
         egui_winit: &mut egui_winit::State,
         viewport_id: ViewportId,
     ) -> EventResponse {
@@ -319,7 +319,7 @@ impl EpiIntegration {
                 self.close = true;
             }
             WindowEvent::TabletButton {
-                button: TabletButton::Tip | TabletButton::Eraser,
+                button: winit::event::TabletButton::Tip | winit::event::TabletButton::Eraser,
                 state: ElementState::Pressed,
                 ..
             }

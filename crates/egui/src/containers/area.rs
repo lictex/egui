@@ -429,7 +429,7 @@ impl Prepared {
                 s.shadow_clip_rect(
                     shadow,
                     Rect::from_min_max(self.state.left_top_pos(), constrain_rect.max),
-                    Rounding::none(),
+                    Rounding::ZERO,
                 )
             })
             .expand(clip_rect_margin)

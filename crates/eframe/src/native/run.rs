@@ -107,7 +107,7 @@ trait WinitApp {
     fn on_event(
         &mut self,
         event_loop: &EventLoopWindowTarget<UserEvent>,
-        event: &winit::event::Event<'_, UserEvent>,
+        event: &winit::event::Event<UserEvent>,
     ) -> Result<EventResult>;
 }
 
@@ -129,7 +129,7 @@ fn create_event_loop(native_options: &mut epi::NativeOptions) -> EventLoop<UserE
     let mut builder = create_event_loop_builder(native_options);
 
     crate::profile_scope!("EventLoopBuilder::build");
-    builder.build()
+    builder.build().unwrap()
 }
 
 /// Access a thread-local event loop.
@@ -157,7 +157,7 @@ fn run_and_return(
     event_loop: &mut EventLoop<UserEvent>,
     mut winit_app: impl WinitApp,
 ) -> Result<()> {
-    use winit::platform::run_return::EventLoopExtRunReturn as _;
+    use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 
     log::debug!("Entering the winit event loop (run_return)…");
 
@@ -166,20 +166,23 @@ fn run_and_return(
 
     let mut returned_result = Ok(());
 
-    event_loop.run_return(|event, event_loop, control_flow| {
+    event_loop.run_on_demand(|event, event_loop_window_target| {
         crate::profile_scope!("winit_event", short_event_description(&event));
 
         let event_result = match &event {
-            winit::event::Event::LoopDestroyed => {
+            winit::event::Event::LoopExiting => {
                 // On Mac, Cmd-Q we get here and then `run_return` doesn't return (despite its name),
                 // so we need to save state now:
                 log::debug!("Received Event::LoopDestroyed - saving app state…");
                 winit_app.save_and_destroy();
-                *control_flow = ControlFlow::Exit;
+                event_loop_window_target.exit();
                 return;
             }
 
-            winit::event::Event::RedrawRequested(window_id) => {
+            winit::event::Event::WindowEvent {
+                window_id,
+                event: winit::event::WindowEvent::RedrawRequested,
+            } => {
                 windows_next_repaint_times.remove(window_id);
                 winit_app.run_ui_and_paint(*window_id)
             }
@@ -210,7 +213,7 @@ fn run_and_return(
                 EventResult::Wait
             }
 
-            event => match winit_app.on_event(event_loop, event) {
+            event => match winit_app.on_event(event_loop_window_target, event) {
                 Ok(event_result) => event_result,
                 Err(err) => {
                     log::error!("Exiting because of error: {err} during event {event:?}");
@@ -222,7 +225,7 @@ fn run_and_return(
 
         match event_result {
             EventResult::Wait => {
-                control_flow.set_wait();
+                event_loop_window_target.set_control_flow(ControlFlow::Wait);
             }
             EventResult::RepaintNow(window_id) => {
                 log::trace!("Repaint caused by {}", short_event_description(&event));
@@ -251,7 +254,7 @@ fn run_and_return(
             EventResult::Exit => {
                 log::debug!("Asking to exit event loop…");
                 winit_app.save_and_destroy();
-                *control_flow = ControlFlow::Exit;
+                event_loop_window_target.exit();
                 return;
             }
         }
@@ -262,7 +265,12 @@ fn run_and_return(
         use winit::event::Event;
         if matches!(
             event,
-            Event::RedrawEventsCleared | Event::RedrawRequested(_) | Event::Resumed
+            Event::AboutToWait
+                | Event::WindowEvent {
+                    event: winit::event::WindowEvent::RedrawRequested,
+                    ..
+                }
+                | Event::Resumed
         ) {
             windows_next_repaint_times.retain(|window_id, repaint_time| {
                 if Instant::now() < *repaint_time {
@@ -270,7 +278,7 @@ fn run_and_return(
                 };
 
                 next_repaint_time = None;
-                control_flow.set_poll();
+                event_loop_window_target.set_control_flow(ControlFlow::Poll);
 
                 if let Some(window) = winit_app.window(*window_id) {
                     log::trace!("request_redraw for {window_id:?}");
@@ -287,7 +295,7 @@ fn run_and_return(
             if time_until_next < std::time::Duration::from_secs(10_000) {
                 log::trace!("WaitUntil {time_until_next:?}");
             }
-            control_flow.set_wait_until(next_repaint_time);
+            event_loop_window_target.set_control_flow(ControlFlow::WaitUntil(next_repaint_time));
         };
     });
 
@@ -316,16 +324,20 @@ fn run_and_exit(event_loop: EventLoop<UserEvent>, mut winit_app: impl WinitApp +
     // When to repaint what window
     let mut windows_next_repaint_times = HashMap::default();
 
-    event_loop.run(move |event, event_loop, control_flow| {
+    let event_loop_result = event_loop.run(move |event, event_loop_window_target| {
         crate::profile_scope!("winit_event", short_event_description(&event));
 
         let event_result = match &event {
-            winit::event::Event::LoopDestroyed => {
+            winit::event::Event::LoopExiting => {
                 log::debug!("Received Event::LoopDestroyed");
                 EventResult::Exit
             }
 
-            winit::event::Event::RedrawRequested(window_id) => {
+            winit::event::Event::WindowEvent {
+                window_id,
+                event: winit::event::WindowEvent::RedrawRequested,
+                ..
+            } => {
                 windows_next_repaint_times.remove(window_id);
                 winit_app.run_ui_and_paint(*window_id)
             }
@@ -355,7 +367,7 @@ fn run_and_exit(event_loop: EventLoop<UserEvent>, mut winit_app: impl WinitApp +
                 EventResult::Wait
             }
 
-            event => match winit_app.on_event(event_loop, event) {
+            event => match winit_app.on_event(event_loop_window_target, event) {
                 Ok(event_result) => event_result,
                 Err(err) => {
                     panic!("eframe encountered a fatal error: {err} during event {event:?}");
@@ -365,7 +377,7 @@ fn run_and_exit(event_loop: EventLoop<UserEvent>, mut winit_app: impl WinitApp +
 
         match event_result {
             EventResult::Wait => {
-                control_flow.set_wait();
+                event_loop_window_target.set_control_flow(ControlFlow::Wait);
             }
             EventResult::RepaintNow(window_id) => {
                 log::trace!("Repaint caused by {}", short_event_description(&event));
@@ -405,7 +417,10 @@ fn run_and_exit(event_loop: EventLoop<UserEvent>, mut winit_app: impl WinitApp +
         use winit::event::Event;
         if matches!(
             event,
-            Event::RedrawEventsCleared | Event::RedrawRequested(_) | Event::Resumed
+            Event::WindowEvent {
+                event: winit::event::WindowEvent::RedrawRequested,
+                ..
+            } | Event::Resumed
         ) {
             windows_next_repaint_times.retain(|window_id, repaint_time| {
                 if Instant::now() < *repaint_time {
@@ -413,7 +428,7 @@ fn run_and_exit(event_loop: EventLoop<UserEvent>, mut winit_app: impl WinitApp +
                 }
 
                 next_repaint_time = None;
-                control_flow.set_poll();
+                event_loop_window_target.set_control_flow(ControlFlow::Poll);
 
                 if let Some(window) = winit_app.window(*window_id) {
                     log::trace!("request_redraw for {window_id:?}");
@@ -441,9 +456,11 @@ fn run_and_exit(event_loop: EventLoop<UserEvent>, mut winit_app: impl WinitApp +
                         .map(|window| window.request_redraw())
                 });
 
-            control_flow.set_wait_until(next_repaint_time);
+            event_loop_window_target.set_control_flow(ControlFlow::WaitUntil(next_repaint_time));
         };
-    })
+    });
+
+    std::process::exit(if event_loop_result.is_ok() { 0 } else { 1 })
 }
 
 // ----------------------------------------------------------------------------
@@ -452,7 +469,7 @@ fn run_and_exit(event_loop: EventLoop<UserEvent>, mut winit_app: impl WinitApp +
 mod glow_integration {
     use glutin::{
         display::GetGlDisplay,
-        prelude::{GlDisplay, NotCurrentGlContextSurfaceAccessor, PossiblyCurrentGlContext},
+        prelude::{GlDisplay, NotCurrentGlContext, PossiblyCurrentGlContext},
         surface::GlSurface,
     };
 
@@ -672,7 +689,7 @@ mod glow_integration {
         fn on_window_event(
             &mut self,
             window_id: WindowId,
-            event: &winit::event::WindowEvent<'_>,
+            event: &winit::event::WindowEvent,
             focused_viewport: &mut Option<ViewportId>,
         ) -> EventResult {
             let viewport_id = self
@@ -714,12 +731,12 @@ mod glow_integration {
                     }
                 }
 
-                winit::event::WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                winit::event::WindowEvent::ScaleFactorChanged { .. } => {
                     if let Some(viewport_id) = viewport_id {
                         repaint_asap = true;
-                        self.glutin
-                            .borrow_mut()
-                            .resize(viewport_id, **new_inner_size);
+                        // self.glutin
+                        //     .borrow_mut()
+                        //     .resize(viewport_id, **new_inner_size);
                     }
                 }
 
@@ -903,7 +920,7 @@ mod glow_integration {
             // Create GL display. This may probably create a window too on most platforms. Definitely on `MS windows`. Never on Android.
             let display_builder = glutin_winit::DisplayBuilder::new()
                 // we might want to expose this option to users in the future. maybe using an env var or using native_options.
-                .with_preference(glutin_winit::ApiPrefence::FallbackEgl) // https://github.com/emilk/egui/issues/2520#issuecomment-1367841150
+                .with_preference(glutin_winit::ApiPreference::FallbackEgl) // https://github.com/emilk/egui/issues/2520#issuecomment-1367841150
                 .with_window_builder(Some(create_winit_window_builder(&viewport_builder)));
 
             let (window, gl_config) = {
@@ -1755,7 +1772,7 @@ mod glow_integration {
         fn on_event(
             &mut self,
             event_loop: &EventLoopWindowTarget<UserEvent>,
-            event: &winit::event::Event<'_, UserEvent>,
+            event: &winit::event::Event<UserEvent>,
         ) -> Result<EventResult> {
             crate::profile_function!();
 
@@ -1783,15 +1800,6 @@ mod glow_integration {
                 winit::event::Event::Suspended => {
                     if let Some(running) = &mut self.running {
                         running.glutin.borrow_mut().on_suspend()?;
-                    }
-                    EventResult::Wait
-                }
-
-                winit::event::Event::MainEventsCleared => {
-                    if let Some(running) = &self.running {
-                        if let Err(err) = running.glutin.borrow_mut().on_resume(event_loop) {
-                            log::warn!("on_resume failed {err}");
-                        }
                     }
                     EventResult::Wait
                 }
@@ -2711,7 +2719,7 @@ mod wgpu_integration {
                     }
                 }
 
-                winit::event::WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                winit::event::WindowEvent::ScaleFactorChanged { .. } => {
                     use std::num::NonZeroU32;
                     if let (Some(width), Some(height), Some(viewport_id)) = (
                         NonZeroU32::new(new_inner_size.width),
@@ -2901,16 +2909,15 @@ fn system_theme(window: &Window, options: &NativeOptions) -> Option<crate::Theme
 
 // For the puffin profiler!
 #[allow(dead_code)] // Only used for profiling
-fn short_event_description(event: &winit::event::Event<'_, UserEvent>) -> &'static str {
+fn short_event_description(event: &winit::event::Event<UserEvent>) -> &'static str {
     use winit::event::{DeviceEvent, Event, StartCause, WindowEvent};
 
     match event {
+        Event::AboutToWait => "Event::AboutToWait",
+        Event::LoopExiting => "Event::LoopExiting",
         Event::Suspended => "Event::Suspended",
         Event::Resumed => "Event::Resumed",
-        Event::MainEventsCleared => "Event::MainEventsCleared",
-        Event::RedrawRequested(_) => "Event::RedrawRequested",
-        Event::RedrawEventsCleared => "Event::RedrawEventsCleared",
-        Event::LoopDestroyed => "Event::LoopDestroyed",
+        Event::MemoryWarning => "Event::MemoryWarning",
         Event::UserEvent(user_event) => match user_event {
             UserEvent::RequestRepaint { .. } => "UserEvent::RequestRepaint",
             #[cfg(feature = "accesskit")]
@@ -2924,7 +2931,6 @@ fn short_event_description(event: &winit::event::Event<'_, UserEvent>) -> &'stat
             DeviceEvent::Motion { .. } => "DeviceEvent::Motion",
             DeviceEvent::Button { .. } => "DeviceEvent::Button",
             DeviceEvent::Key { .. } => "DeviceEvent::Key",
-            DeviceEvent::Text { .. } => "DeviceEvent::Text",
         },
         Event::NewEvents(start_cause) => match start_cause {
             StartCause::ResumeTimeReached { .. } => "NewEvents::ResumeTimeReached",
@@ -2933,6 +2939,7 @@ fn short_event_description(event: &winit::event::Event<'_, UserEvent>) -> &'stat
             StartCause::Init => "NewEvents::Init",
         },
         Event::WindowEvent { event, .. } => match event {
+            WindowEvent::ActivationTokenDone { .. } => "WindowEvent::ActivationTokenDone",
             WindowEvent::Resized { .. } => "WindowEvent::Resized",
             WindowEvent::Moved { .. } => "WindowEvent::Moved",
             WindowEvent::CloseRequested { .. } => "WindowEvent::CloseRequested",
@@ -2940,7 +2947,6 @@ fn short_event_description(event: &winit::event::Event<'_, UserEvent>) -> &'stat
             WindowEvent::DroppedFile { .. } => "WindowEvent::DroppedFile",
             WindowEvent::HoveredFile { .. } => "WindowEvent::HoveredFile",
             WindowEvent::HoveredFileCancelled { .. } => "WindowEvent::HoveredFileCancelled",
-            WindowEvent::ReceivedCharacter { .. } => "WindowEvent::ReceivedCharacter",
             WindowEvent::Focused { .. } => "WindowEvent::Focused",
             WindowEvent::KeyboardInput { .. } => "WindowEvent::KeyboardInput",
             WindowEvent::ModifiersChanged { .. } => "WindowEvent::ModifiersChanged",
@@ -2951,6 +2957,7 @@ fn short_event_description(event: &winit::event::Event<'_, UserEvent>) -> &'stat
             WindowEvent::MouseWheel { .. } => "WindowEvent::MouseWheel",
             WindowEvent::MouseInput { .. } => "WindowEvent::MouseInput",
             WindowEvent::TouchpadMagnify { .. } => "WindowEvent::TouchpadMagnify",
+            WindowEvent::RedrawRequested { .. } => "WindowEvent::RedrawRequested",
             WindowEvent::SmartMagnify { .. } => "WindowEvent::SmartMagnify",
             WindowEvent::TouchpadRotate { .. } => "WindowEvent::TouchpadRotate",
             WindowEvent::TouchpadPressure { .. } => "WindowEvent::TouchpadPressure",
@@ -2959,6 +2966,10 @@ fn short_event_description(event: &winit::event::Event<'_, UserEvent>) -> &'stat
             WindowEvent::ScaleFactorChanged { .. } => "WindowEvent::ScaleFactorChanged",
             WindowEvent::ThemeChanged { .. } => "WindowEvent::ThemeChanged",
             WindowEvent::Occluded { .. } => "WindowEvent::Occluded",
+            WindowEvent::TabletPenEnter { .. } => "WindowEvent::TabletPenEnter",
+            WindowEvent::TabletPenLeave { .. } => "WindowEvent::TabletPenLeave",
+            WindowEvent::TabletPenMotion { .. } => "WindowEvent::TabletPenMotion",
+            WindowEvent::TabletButton { .. } => "WindowEvent::TabletButton",
         },
     }
 }

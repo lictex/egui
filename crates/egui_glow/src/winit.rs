@@ -52,7 +52,7 @@ impl EguiGlow {
         }
     }
 
-    pub fn on_event(&mut self, event: &winit::event::WindowEvent<'_>) -> EventResponse {
+    pub fn on_event(&mut self, event: &winit::event::WindowEvent) -> EventResponse {
         self.egui_winit
             .on_event(&self.egui_ctx, event, ViewportId::ROOT)
     }

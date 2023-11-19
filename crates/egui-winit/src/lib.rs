@@ -242,7 +242,7 @@ impl State {
     pub fn on_event(
         &mut self,
         egui_ctx: &egui::Context,
-        event: &winit::event::WindowEvent<'_>,
+        event: &winit::event::WindowEvent,
         viewport_id: ViewportId,
     ) -> EventResponse {
         crate::profile_function!();
@@ -379,27 +379,6 @@ impl State {
                     consumed: egui_ctx.wants_pointer_input(),
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                let text = event.text.clone().unwrap_or_default();
-                // On Mac we get here when the user presses Cmd-C (copy), ctrl-W, etc.
-                // We need to ignore these characters that are side-effects of commands.
-                let is_mac_cmd = cfg!(target_os = "macos")
-                    && (self.egui_input.modifiers.ctrl || self.egui_input.modifiers.mac_cmd);
-
-                let consumed =
-                    if is_printable_char(text.chars().next().unwrap_or_default()) && !is_mac_cmd {
-                        self.egui_input
-                            .events
-                            .push(egui::Event::Text(text.to_string()));
-                        egui_ctx.wants_keyboard_input()
-                    } else {
-                        false
-                    };
-                EventResponse {
-                    repaint: true,
-                    consumed,
-                }
-            }
             WindowEvent::Ime(ime) => {
                 // on Mac even Cmd-C is pressed during ime, a `c` is pushed to Preedit.
                 // So no need to check is_mac_cmd.
@@ -439,8 +418,8 @@ impl State {
                     consumed: egui_ctx.wants_keyboard_input(),
                 }
             }
-            WindowEvent::KeyboardInput { input, .. } => {
-                self.on_keyboard_input(input);
+            WindowEvent::KeyboardInput { event, .. } => {
+                self.on_keyboard_input(event);
                 // When pressing the Tab key, egui focuses the first focusable element, hence Tab always consumes.
                 let consumed = egui_ctx.wants_keyboard_input()
                     || event.physical_key == winit::keyboard::KeyCode::Tab;
@@ -546,6 +525,16 @@ impl State {
                     consumed: egui_ctx.wants_pointer_input(),
                 }
             }
+
+            winit::event::WindowEvent::RedrawRequested => EventResponse {
+                repaint: true,
+                consumed: false,
+            },
+
+            winit::event::WindowEvent::ActivationTokenDone { .. } => EventResponse {
+                repaint: false,
+                consumed: false,
+            },
         }
     }
 
@@ -741,33 +730,48 @@ impl State {
     }
 
     fn on_keyboard_input(&mut self, input: &winit::event::KeyEvent) {
-        let keycode = input.physical_key;
-        let pressed = input.state == winit::event::ElementState::Pressed;
+        if let winit::keyboard::PhysicalKey::Code(keycode) = input.physical_key {
+            let pressed = input.state == winit::event::ElementState::Pressed;
 
-        if pressed {
-            // VirtualKeyCode::Paste etc in winit are broken/untrustworthy,
-            // so we detect these things manually:
-            if is_cut_command(self.egui_input.modifiers, keycode) {
-                self.egui_input.events.push(egui::Event::Cut);
-            } else if is_copy_command(self.egui_input.modifiers, keycode) {
-                self.egui_input.events.push(egui::Event::Copy);
-            } else if is_paste_command(self.egui_input.modifiers, keycode) {
-                if let Some(contents) = self.clipboard.get() {
-                    let contents = contents.replace("\r\n", "\n");
-                    if !contents.is_empty() {
-                        self.egui_input.events.push(egui::Event::Paste(contents));
+            if pressed {
+                // VirtualKeyCode::Paste etc in winit are broken/untrustworthy,
+                // so we detect these things manually:
+                if is_cut_command(self.egui_input.modifiers, keycode) {
+                    self.egui_input.events.push(egui::Event::Cut);
+                } else if is_copy_command(self.egui_input.modifiers, keycode) {
+                    self.egui_input.events.push(egui::Event::Copy);
+                } else if is_paste_command(self.egui_input.modifiers, keycode) {
+                    if let Some(contents) = self.clipboard.get() {
+                        let contents = contents.replace("\r\n", "\n");
+                        if !contents.is_empty() {
+                            self.egui_input.events.push(egui::Event::Paste(contents));
+                        }
                     }
                 }
             }
-        }
 
-        if let Some(key) = translate_virtual_key_code(keycode) {
-            self.egui_input.events.push(egui::Event::Key {
-                key,
-                pressed,
-                repeat: false, // egui will fill this in for us!
-                modifiers: self.egui_input.modifiers,
-            });
+            if let Some(key) = translate_key_code(keycode) {
+                self.egui_input.events.push(egui::Event::Key {
+                    key,
+                    pressed,
+                    repeat: false, // egui will fill this in for us!
+                    modifiers: self.egui_input.modifiers,
+                });
+            }
+            if let Some(text) = &input.text {
+                // On Mac we get here when the user presses Cmd-C (copy), ctrl-W, etc.
+                // We need to ignore these characters that are side-effects of commands.
+                // TODO: winit 0.29 - this was Event::ReceivedCharacter, still relevant or
+                //       need to handle somewhere else?
+                let is_mac_cmd = cfg!(target_os = "macos")
+                    && (self.egui_input.modifiers.ctrl || self.egui_input.modifiers.mac_cmd);
+
+                if !is_mac_cmd {
+                    self.egui_input
+                        .events
+                        .push(egui::Event::Text(text.to_string()));
+                }
+            }
         }
     }
 
@@ -818,7 +822,14 @@ impl State {
         }
 
         if let Some(egui::Pos2 { x, y }) = text_cursor_pos {
-            window.set_ime_position(winit::dpi::LogicalPosition { x, y });
+            window.set_ime_cursor_area(
+                winit::dpi::LogicalPosition { x, y },
+                winit::dpi::LogicalSize {
+                    // TODO: What size to use? New size arg in winit 0.29
+                    width: 10,
+                    height: 10,
+                },
+            );
         }
 
         #[cfg(feature = "accesskit")]
@@ -981,11 +992,11 @@ fn translate_mouse_button(button: winit::event::MouseButton) -> Option<egui::Poi
         winit::event::MouseButton::Middle => Some(egui::PointerButton::Middle),
         winit::event::MouseButton::Other(1) => Some(egui::PointerButton::Extra1),
         winit::event::MouseButton::Other(2) => Some(egui::PointerButton::Extra2),
-        winit::event::MouseButton::Other(_) => None,
+        _ => None,
     }
 }
 
-fn translate_virtual_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key> {
+fn translate_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key> {
     use egui::Key;
     use winit::keyboard::KeyCode;
 
@@ -995,11 +1006,11 @@ fn translate_virtual_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key
         KeyCode::ArrowRight => Key::ArrowRight,
         KeyCode::ArrowUp => Key::ArrowUp,
 
-        VirtualKeyCode::Escape => Key::Escape,
-        VirtualKeyCode::Tab => Key::Tab,
-        VirtualKeyCode::Back => Key::Backspace,
-        VirtualKeyCode::Return | VirtualKeyCode::NumpadEnter => Key::Enter,
-        VirtualKeyCode::Space => Key::Space,
+        KeyCode::Escape => Key::Escape,
+        KeyCode::Tab => Key::Tab,
+        KeyCode::Backspace => Key::Backspace,
+        KeyCode::Enter | KeyCode::NumpadEnter => Key::Enter,
+        KeyCode::Space => Key::Space,
 
         KeyCode::Insert => Key::Insert,
         KeyCode::Delete => Key::Delete,
@@ -1008,12 +1019,10 @@ fn translate_virtual_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key
         KeyCode::PageUp => Key::PageUp,
         KeyCode::PageDown => Key::PageDown,
 
-        VirtualKeyCode::Minus | VirtualKeyCode::NumpadSubtract => Key::Minus,
+        KeyCode::Minus | KeyCode::NumpadSubtract => Key::Minus,
         // Using Mac the key with the Plus sign on it is reported as the Equals key
         // (with both English and Swedish keyboard).
-        VirtualKeyCode::Equals | VirtualKeyCode::Plus | VirtualKeyCode::NumpadAdd => {
-            Key::PlusEquals
-        }
+        KeyCode::Equal | /* TODO: KeyCode::Plus | */ KeyCode::NumpadAdd => Key::PlusEquals,
 
         KeyCode::Digit0 | KeyCode::Numpad0 => Key::Num0,
         KeyCode::Digit1 | KeyCode::Numpad1 => Key::Num1,
@@ -1158,7 +1167,7 @@ pub fn process_viewport_commands(
             ViewportCommand::InnerSize(size) => {
                 let width = size.x.max(1.0);
                 let height = size.y.max(1.0);
-                window.set_inner_size(LogicalSize::new(width, height));
+                let _ = window.request_inner_size(LogicalSize::new(width, height));
             }
             ViewportCommand::BeginResize(direction) => {
                 if let Err(err) = window.drag_resize_window(match direction {
@@ -1241,8 +1250,15 @@ pub fn process_viewport_commands(
                     .expect("Invalid ICON data!")
                 }));
             }
-            ViewportCommand::IMEPosition(pos) => {
-                window.set_ime_position(LogicalPosition::new(pos.x, pos.y));
+            ViewportCommand::IMEPosition(egui::Pos2 { x, y }) => {
+                window.set_ime_cursor_area(
+                    winit::dpi::LogicalPosition { x, y },
+                    winit::dpi::LogicalSize {
+                        // TODO: What size to use? New size arg in winit 0.29
+                        width: 10,
+                        height: 10,
+                    },
+                );
             }
             ViewportCommand::IMEAllowed(v) => window.set_ime_allowed(v),
             ViewportCommand::IMEPurpose(p) => window.set_ime_purpose(match p {
