@@ -450,16 +450,89 @@ impl State {
                     consumed: self.egui_ctx.wants_pointer_input(),
                 }
             }
-
-            winit::event::WindowEvent::RedrawRequested => EventResponse {
+            WindowEvent::TabletPenEnter { .. } => EventResponse {
                 repaint: true,
                 consumed: false,
             },
-
-            winit::event::WindowEvent::ActivationTokenDone { .. } => EventResponse {
-                repaint: false,
-                consumed: false,
-            },
+            WindowEvent::TabletPenLeave { .. } => {
+                self.pointer_pos_in_points = None;
+                self.egui_input.events.push(egui::Event::PointerGone);
+                EventResponse {
+                    repaint: true,
+                    consumed: false,
+                }
+            }
+            WindowEvent::TabletPenMotion {
+                device_id,
+                location,
+                pressure,
+                rotation,
+                distance,
+                tilt,
+            } => {
+                if let Some(id) = self.pointer_touch_id {
+                    self.on_touch(
+                        window,
+                        &winit::event::Touch {
+                            device_id: *device_id,
+                            phase: winit::event::TouchPhase::Moved,
+                            location: *location,
+                            force: Some(winit::event::Force::Normalized(*pressure)),
+                            id,
+                        },
+                    );
+                } else {
+                    self.on_cursor_moved(window, *location);
+                }
+                self.last_pen_pos = *location;
+                self.last_pen_pressure = *pressure;
+                EventResponse {
+                    repaint: true,
+                    consumed: self.egui_ctx.is_using_pointer(),
+                }
+            }
+            WindowEvent::TabletButton {
+                device_id,
+                button,
+                state,
+            } => {
+                match button {
+                    winit::event::TabletButton::Tip | winit::event::TabletButton::Eraser => {
+                        self.on_touch(
+                            window,
+                            &winit::event::Touch {
+                                device_id: *device_id,
+                                phase: match state {
+                                    winit::event::ElementState::Pressed => {
+                                        winit::event::TouchPhase::Started
+                                    }
+                                    winit::event::ElementState::Released => {
+                                        winit::event::TouchPhase::Ended
+                                    }
+                                },
+                                location: self.last_pen_pos,
+                                force: Some(winit::event::Force::Normalized(
+                                    self.last_pen_pressure,
+                                )),
+                                id: 15,
+                            },
+                        );
+                    }
+                    winit::event::TabletButton::Pen(0) => {
+                        self.on_mouse_button_input(*state, winit::event::MouseButton::Middle);
+                    }
+                    winit::event::TabletButton::Pen(1) => {
+                        self.on_mouse_button_input(*state, winit::event::MouseButton::Right);
+                    }
+                    e => {
+                        dbg!(e);
+                    }
+                };
+                EventResponse {
+                    repaint: true,
+                    consumed: self.egui_ctx.wants_pointer_input(),
+                }
+            }
         }
     }
 
@@ -1680,6 +1753,10 @@ pub fn short_window_event_description(event: &winit::event::WindowEvent) -> &'st
         WindowEvent::ScaleFactorChanged { .. } => "WindowEvent::ScaleFactorChanged",
         WindowEvent::ThemeChanged { .. } => "WindowEvent::ThemeChanged",
         WindowEvent::Occluded { .. } => "WindowEvent::Occluded",
+        WindowEvent::TabletPenEnter { .. } => "WindowEvent::TabletPenEnter",
+        WindowEvent::TabletPenLeave { .. } => "WindowEvent::TabletPenLeave",
+        WindowEvent::TabletPenMotion { .. } => "WindowEvent::TabletPenMotion",
+        WindowEvent::TabletButton { .. } => "WindowEvent::TabletButton",
     }
 }
 

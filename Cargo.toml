@@ -60,5 +60,5 @@ wgpu = { version = "0.18.0", features = ["fragile-send-sync-non-atomic-wasm"] }
 #wgpu = { version = "0.18.0", features = ["webgl"] }
 
 [patch.crates-io]
-winit = { git = "https://github.com/xyning/winit/", rev = "0e45153e" }
+winit = { git = "https://github.com/xyning/winit/", rev = "9216720363e8aa8d639508916cac1909a0b3b83d" }
 # sctk-adwaita = { path = "../sctk-adwaita" }
