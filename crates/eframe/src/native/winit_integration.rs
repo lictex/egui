@@ -74,7 +74,11 @@ pub trait WinitApp {
 
     fn save_and_destroy(&mut self);
 
-    fn run_ui_and_paint(&mut self, window_id: WindowId) -> EventResult;
+    fn run_ui_and_paint(
+        &mut self,
+        event_loop: &EventLoopWindowTarget<UserEvent>,
+        window_id: WindowId,
+    ) -> EventResult;
 
     fn on_event(
         &mut self,
@@ -118,10 +122,8 @@ pub fn system_theme(window: &Window, options: &crate::NativeOptions) -> Option<c
 /// Short and fast description of an event.
 /// Useful for logging and profiling.
 pub fn short_event_description(event: &winit::event::Event<UserEvent>) -> &'static str {
-    use winit::event::Event;
-
     match event {
-        Event::UserEvent(user_event) => match user_event {
+        winit::event::Event::UserEvent(user_event) => match user_event {
             UserEvent::RequestRepaint { .. } => "UserEvent::RequestRepaint",
             #[cfg(feature = "accesskit")]
             UserEvent::AccessKitActionRequest(_) => "UserEvent::AccessKitActionRequest",

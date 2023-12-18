@@ -38,6 +38,13 @@ pub fn screen_size_in_pixels(window: &Window) -> egui::Vec2 {
     egui::vec2(size.width as f32, size.height as f32)
 }
 
+/// Calculate the `pixels_per_point` for a given window, given the current egui zoom factor
+pub fn pixels_per_point(egui_ctx: &egui::Context, window: &Window) -> f32 {
+    let native_pixels_per_point = window.scale_factor() as f32;
+    let egui_zoom_factor = egui_ctx.zoom_factor();
+    egui_zoom_factor * native_pixels_per_point
+}
+
 // ----------------------------------------------------------------------------
 
 #[must_use]
@@ -62,15 +69,15 @@ pub struct EventResponse {
 ///
 /// Instantiate one of these per viewport/window.
 pub struct State {
+    /// Shared clone.
+    egui_ctx: egui::Context,
+
     viewport_id: ViewportId,
     start_time: web_time::Instant,
     egui_input: egui::RawInput,
     pointer_pos_in_points: Option<egui::Pos2>,
     any_pointer_button_down: bool,
     current_cursor_icon: Option<egui::CursorIcon>,
-
-    /// What egui uses.
-    current_pixels_per_point: f32,
 
     clipboard: clipboard::Clipboard,
 
@@ -100,6 +107,7 @@ pub struct State {
 impl State {
     /// Construct a new instance
     pub fn new(
+        egui_ctx: egui::Context,
         viewport_id: ViewportId,
         display_target: &dyn HasRawDisplayHandle,
         native_pixels_per_point: Option<f32>,
@@ -113,13 +121,13 @@ impl State {
         };
 
         let mut slf = Self {
+            egui_ctx,
             viewport_id,
             start_time: web_time::Instant::now(),
             egui_input,
             pointer_pos_in_points: None,
             any_pointer_button_down: false,
             current_cursor_icon: None,
-            current_pixels_per_point: native_pixels_per_point.unwrap_or(1.0),
 
             clipboard: clipboard::Clipboard::new(display_target),
 
@@ -170,11 +178,9 @@ impl State {
         self.egui_input.max_texture_side = Some(max_texture_side);
     }
 
-    /// The number of physical pixels per logical point,
-    /// as configured on the current egui context (see [`egui::Context::pixels_per_point`]).
     #[inline]
-    pub fn pixels_per_point(&self) -> f32 {
-        self.current_pixels_per_point
+    pub fn egui_ctx(&self) -> &egui::Context {
+        &self.egui_ctx
     }
 
     /// The current input state.
@@ -191,19 +197,12 @@ impl State {
         &mut self.egui_input
     }
 
-    /// Update the given viewport info with the current state of the window.
-    ///
-    /// Call before [`Self::update_viewport_info`]
-    pub fn update_viewport_info(&self, info: &mut ViewportInfo, window: &Window) {
-        update_viewport_info(info, window, self.current_pixels_per_point);
-    }
-
     /// Prepare for a new frame by extracting the accumulated input,
     ///
     /// as well as setting [the time](egui::RawInput::time) and [screen rectangle](egui::RawInput::screen_rect).
     ///
     /// You need to set [`egui::RawInput::viewports`] yourself though.
-    /// Use [`Self::update_viewport_info`] to update the info for each
+    /// Use [`update_viewport_info`] to update the info for each
     /// viewport.
     pub fn take_egui_input(&mut self, window: &Window) -> egui::RawInput {
         crate::profile_function!();
@@ -214,7 +213,8 @@ impl State {
         // See: https://github.com/rust-windowing/winit/issues/208
         // This solves an issue where egui window positions would be changed when minimizing on Windows.
         let screen_size_in_pixels = screen_size_in_pixels(window);
-        let screen_size_in_points = screen_size_in_pixels / self.current_pixels_per_point;
+        let screen_size_in_points =
+            screen_size_in_pixels / pixels_per_point(&self.egui_ctx, window);
 
         self.egui_input.screen_rect = (screen_size_in_points.x > 0.0
             && screen_size_in_points.y > 0.0)
@@ -237,7 +237,7 @@ impl State {
     /// The result can be found in [`Self::egui_input`] and be extracted with [`Self::take_egui_input`].
     pub fn on_window_event(
         &mut self,
-        egui_ctx: &egui::Context,
+        window: &Window,
         event: &winit::event::WindowEvent,
     ) -> EventResponse {
         crate::profile_function!(short_window_event_description(event));
@@ -252,7 +252,7 @@ impl State {
                     .entry(self.viewport_id)
                     .or_default()
                     .native_pixels_per_point = Some(native_pixels_per_point);
-                self.current_pixels_per_point = egui_ctx.zoom_factor() * native_pixels_per_point;
+
                 EventResponse {
                     repaint: true,
                     consumed: false,
@@ -262,21 +262,21 @@ impl State {
                 self.on_mouse_button_input(*state, *button);
                 EventResponse {
                     repaint: true,
-                    consumed: egui_ctx.wants_pointer_input(),
+                    consumed: self.egui_ctx.wants_pointer_input(),
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.on_mouse_wheel(*delta);
+                self.on_mouse_wheel(window, *delta);
                 EventResponse {
                     repaint: true,
-                    consumed: egui_ctx.wants_pointer_input(),
+                    consumed: self.egui_ctx.wants_pointer_input(),
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.on_cursor_moved(*position);
+                self.on_cursor_moved(window, *position);
                 EventResponse {
                     repaint: true,
-                    consumed: egui_ctx.is_using_pointer(),
+                    consumed: self.egui_ctx.is_using_pointer(),
                 }
             }
             WindowEvent::CursorLeft { .. } => {
@@ -289,96 +289,19 @@ impl State {
             }
             // WindowEvent::TouchpadPressure {device_id, pressure, stage, ..  } => {} // TODO
             WindowEvent::Touch(touch) => {
-                self.on_touch(touch);
+                self.on_touch(window, touch);
                 let consumed = match touch.phase {
                     winit::event::TouchPhase::Started
                     | winit::event::TouchPhase::Ended
-                    | winit::event::TouchPhase::Cancelled => egui_ctx.wants_pointer_input(),
-                    winit::event::TouchPhase::Moved => egui_ctx.is_using_pointer(),
+                    | winit::event::TouchPhase::Cancelled => self.egui_ctx.wants_pointer_input(),
+                    winit::event::TouchPhase::Moved => self.egui_ctx.is_using_pointer(),
                 };
                 EventResponse {
                     repaint: true,
                     consumed,
                 }
             }
-            WindowEvent::TabletPenEnter {
-                device_id,
-                inverted,
-            } => EventResponse {
-                repaint: true,
-                consumed: false,
-            },
-            WindowEvent::TabletPenLeave { device_id } => {
-                self.pointer_pos_in_points = None;
-                self.egui_input.events.push(egui::Event::PointerGone);
-                EventResponse {
-                    repaint: true,
-                    consumed: false,
-                }
-            }
-            WindowEvent::TabletPenMotion {
-                device_id,
-                location,
-                pressure,
-                rotation,
-                distance,
-                tilt,
-            } => {
-                if let Some(id) = self.pointer_touch_id {
-                    self.on_touch(&winit::event::Touch {
-                        device_id: *device_id,
-                        phase: winit::event::TouchPhase::Moved,
-                        location: *location,
-                        force: Some(winit::event::Force::Normalized(*pressure)),
-                        id,
-                    });
-                } else {
-                    self.on_cursor_moved(*location);
-                }
-                self.last_pen_pos = *location;
-                self.last_pen_pressure = *pressure;
-                EventResponse {
-                    repaint: true,
-                    consumed: egui_ctx.is_using_pointer(),
-                }
-            }
-            WindowEvent::TabletButton {
-                device_id,
-                button,
-                state,
-            } => {
-                match button {
-                    winit::event::TabletButton::Tip | winit::event::TabletButton::Eraser => {
-                        self.on_touch(&winit::event::Touch {
-                            device_id: *device_id,
-                            phase: match state {
-                                winit::event::ElementState::Pressed => {
-                                    winit::event::TouchPhase::Started
-                                }
-                                winit::event::ElementState::Released => {
-                                    winit::event::TouchPhase::Ended
-                                }
-                            },
-                            location: self.last_pen_pos,
-                            force: Some(winit::event::Force::Normalized(self.last_pen_pressure)),
-                            id: 15,
-                        });
-                    }
-                    winit::event::TabletButton::Pen(0) => {
-                        self.on_mouse_button_input(*state, winit::event::MouseButton::Middle)
-                    }
-                    winit::event::TabletButton::Pen(1) => {
-                        self.on_mouse_button_input(*state, winit::event::MouseButton::Right)
-                    }
-                    e => {
-                        dbg!(e);
-                    }
-                };
-                EventResponse {
-                    repaint: true,
-                    consumed: egui_ctx.wants_pointer_input(),
-                }
-            }
+
             WindowEvent::Ime(ime) => {
                 // on Mac even Cmd-C is pressed during ime, a `c` is pushed to Preedit.
                 // So no need to check is_mac_cmd.
@@ -415,13 +338,13 @@ impl State {
 
                 EventResponse {
                     repaint: true,
-                    consumed: egui_ctx.wants_keyboard_input(),
+                    consumed: self.egui_ctx.wants_keyboard_input(),
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 // When pressing the Tab key, egui focuses the first focusable element, hence Tab always consumes.
                 let consumed = self.on_keyboard_input(event)
-                    || egui_ctx.wants_keyboard_input()
+                    || self.egui_ctx.wants_keyboard_input()
                     || event.logical_key
                         == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab);
                 EventResponse {
@@ -471,21 +394,23 @@ impl State {
                 }
             }
             WindowEvent::ModifiersChanged(state) => {
-                use winit::keyboard::ModifiersKeyState::Pressed;
-                self.egui_input.modifiers.alt =
-                    state.lalt_state() == Pressed || state.ralt_state() == Pressed;
-                self.egui_input.modifiers.ctrl =
-                    state.lcontrol_state() == Pressed || state.rcontrol_state() == Pressed;
-                self.egui_input.modifiers.shift =
-                    state.lshift_state() == Pressed || state.rshift_state() == Pressed;
-                self.egui_input.modifiers.mac_cmd = cfg!(target_os = "macos")
-                    && (state.lsuper_state() == Pressed || state.rsuper_state() == Pressed);
+                let state = state.state();
 
+                let alt = state.alt_key();
+                let ctrl = state.control_key();
+                let shift = state.shift_key();
+                let super_ = state.super_key();
+
+                self.egui_input.modifiers.alt = alt;
+                self.egui_input.modifiers.ctrl = ctrl;
+                self.egui_input.modifiers.shift = shift;
+                self.egui_input.modifiers.mac_cmd = cfg!(target_os = "macos") && super_;
                 self.egui_input.modifiers.command = if cfg!(target_os = "macos") {
-                    state.lsuper_state() == Pressed || state.rsuper_state() == Pressed
+                    super_
                 } else {
-                    state.lcontrol_state() == Pressed || state.rcontrol_state() == Pressed
+                    ctrl
                 };
+
                 EventResponse {
                     repaint: true,
                     consumed: false,
@@ -493,11 +418,6 @@ impl State {
             }
 
             // Things that may require repaint:
-            WindowEvent::CloseRequested => EventResponse {
-                consumed: true,
-                repaint: true,
-            },
-
             WindowEvent::RedrawRequested
             | WindowEvent::CursorEntered { .. }
             | WindowEvent::Destroyed
@@ -505,7 +425,8 @@ impl State {
             | WindowEvent::Resized(_)
             | WindowEvent::Moved(_)
             | WindowEvent::ThemeChanged(_)
-            | WindowEvent::TouchpadPressure { .. } => EventResponse {
+            | WindowEvent::TouchpadPressure { .. }
+            | WindowEvent::CloseRequested => EventResponse {
                 repaint: true,
                 consumed: false,
             },
@@ -526,7 +447,7 @@ impl State {
                 self.egui_input.events.push(egui::Event::Zoom(zoom_factor));
                 EventResponse {
                     repaint: true,
-                    consumed: egui_ctx.wants_pointer_input(),
+                    consumed: self.egui_ctx.wants_pointer_input(),
                 }
             }
 
@@ -597,10 +518,16 @@ impl State {
         }
     }
 
-    fn on_cursor_moved(&mut self, pos_in_pixels: winit::dpi::PhysicalPosition<f64>) {
+    fn on_cursor_moved(
+        &mut self,
+        window: &Window,
+        pos_in_pixels: winit::dpi::PhysicalPosition<f64>,
+    ) {
+        let pixels_per_point = pixels_per_point(&self.egui_ctx, window);
+
         let pos_in_points = egui::pos2(
-            pos_in_pixels.x as f32 / self.pixels_per_point(),
-            pos_in_pixels.y as f32 / self.pixels_per_point(),
+            pos_in_pixels.x as f32 / pixels_per_point,
+            pos_in_pixels.y as f32 / pixels_per_point,
         );
         self.pointer_pos_in_points = Some(pos_in_points);
 
@@ -625,7 +552,9 @@ impl State {
         }
     }
 
-    fn on_touch(&mut self, touch: &winit::event::Touch) {
+    fn on_touch(&mut self, window: &Window, touch: &winit::event::Touch) {
+        let pixels_per_point = pixels_per_point(&self.egui_ctx, window);
+
         // Emit touch event
         self.egui_input.events.push(egui::Event::Touch {
             device_id: egui::TouchDeviceId(egui::epaint::util::hash(touch.device_id)),
@@ -637,8 +566,8 @@ impl State {
                 winit::event::TouchPhase::Cancelled => egui::TouchPhase::Cancel,
             },
             pos: egui::pos2(
-                touch.location.x as f32 / self.pixels_per_point(),
-                touch.location.y as f32 / self.pixels_per_point(),
+                touch.location.x as f32 / pixels_per_point,
+                touch.location.y as f32 / pixels_per_point,
             ),
             force: match touch.force {
                 Some(winit::event::Force::Normalized(force)) => Some(force as f32),
@@ -658,14 +587,14 @@ impl State {
                 winit::event::TouchPhase::Started => {
                     self.pointer_touch_id = Some(touch.id);
                     // First move the pointer to the right location
-                    self.on_cursor_moved(touch.location);
+                    self.on_cursor_moved(window, touch.location);
                     self.on_mouse_button_input(
                         winit::event::ElementState::Pressed,
                         winit::event::MouseButton::Left,
                     );
                 }
                 winit::event::TouchPhase::Moved => {
-                    self.on_cursor_moved(touch.location);
+                    self.on_cursor_moved(window, touch.location);
                 }
                 winit::event::TouchPhase::Ended => {
                     self.pointer_touch_id = None;
@@ -687,7 +616,9 @@ impl State {
         }
     }
 
-    fn on_mouse_wheel(&mut self, delta: winit::event::MouseScrollDelta) {
+    fn on_mouse_wheel(&mut self, window: &Window, delta: winit::event::MouseScrollDelta) {
+        let pixels_per_point = pixels_per_point(&self.egui_ctx, window);
+
         {
             let (unit, delta) = match delta {
                 winit::event::MouseScrollDelta::LineDelta(x, y) => {
@@ -698,7 +629,7 @@ impl State {
                     y,
                 }) => (
                     egui::MouseWheelUnit::Point,
-                    egui::vec2(x as f32, y as f32) / self.pixels_per_point(),
+                    egui::vec2(x as f32, y as f32) / pixels_per_point,
                 ),
             };
             let modifiers = self.egui_input.modifiers;
@@ -714,7 +645,7 @@ impl State {
                 egui::vec2(x, y) * points_per_scroll_line
             }
             winit::event::MouseScrollDelta::PixelDelta(delta) => {
-                egui::vec2(delta.x as f32, delta.y as f32) / self.pixels_per_point()
+                egui::vec2(delta.x as f32, delta.y as f32) / pixels_per_point
             }
         };
 
@@ -733,20 +664,53 @@ impl State {
         }
     }
 
-    fn on_keyboard_input(&mut self, input: &winit::event::KeyEvent) -> bool {
-        if let winit::keyboard::PhysicalKey::Code(keycode) = input.physical_key {
-            let pressed = input.state == winit::event::ElementState::Pressed;
+    fn on_keyboard_input(&mut self, event: &winit::event::KeyEvent) -> bool {
+        let winit::event::KeyEvent {
+            // Represents the position of a key independent of the currently active layout.
+            //
+            // It also uniquely identifies the physical key (i.e. it's mostly synonymous with a scancode).
+            // The most prevalent use case for this is games. For example the default keys for the player
+            // to move around might be the W, A, S, and D keys on a US layout. The position of these keys
+            // is more important than their label, so they should map to Z, Q, S, and D on an "AZERTY"
+            // layout. (This value is `KeyCode::KeyW` for the Z key on an AZERTY layout.)
+            physical_key,
 
+            // Represents the results of a keymap, i.e. what character a certain key press represents.
+            // When telling users "Press Ctrl-F to find", this is where we should
+            // look for the "F" key, because they may have a dvorak layout on
+            // a qwerty keyboard, and so the logical "F" character may not be located on the physical `KeyCode::KeyF` position.
+            logical_key,
+
+            text,
+
+            state,
+
+            location: _, // e.g. is it on the numpad?
+            repeat: _,   // egui will figure this out for us
+            ..
+        } = event;
+
+        let pressed = *state == winit::event::ElementState::Pressed;
+
+        let physical_key = if let winit::keyboard::PhysicalKey::Code(keycode) = *physical_key {
+            key_from_key_code(keycode)
+        } else {
+            None
+        };
+
+        let logical_key = key_from_winit_key(logical_key);
+
+        if let Some(logical_key) = logical_key {
             if pressed {
                 // KeyCode::Paste etc in winit are broken/untrustworthy,
                 // so we detect these things manually:
-                if is_cut_command(self.egui_input.modifiers, keycode) {
+                if is_cut_command(self.egui_input.modifiers, logical_key) {
                     self.egui_input.events.push(egui::Event::Cut);
                     return true;
-                } else if is_copy_command(self.egui_input.modifiers, keycode) {
+                } else if is_copy_command(self.egui_input.modifiers, logical_key) {
                     self.egui_input.events.push(egui::Event::Copy);
                     return true;
-                } else if is_paste_command(self.egui_input.modifiers, keycode) {
+                } else if is_paste_command(self.egui_input.modifiers, logical_key) {
                     if let Some(contents) = self.clipboard.get() {
                         let contents = contents.replace("\r\n", "\n");
                         if !contents.is_empty() {
@@ -757,20 +721,32 @@ impl State {
                 }
             }
 
-            if let Some(key) = translate_key_code(keycode) {
-                self.egui_input.events.push(egui::Event::Key {
-                    key,
-                    pressed,
-                    repeat: false, // egui will fill this in for us!
-                    modifiers: self.egui_input.modifiers,
-                });
-            }
+            self.egui_input.events.push(egui::Event::Key {
+                key: logical_key,
+                physical_key,
+                pressed,
+                repeat: false, // egui will fill this in for us!
+                modifiers: self.egui_input.modifiers,
+            });
         }
 
-        if let Some(text) = &input.text {
-            self.egui_input
-                .events
-                .push(egui::Event::Text(text.to_string()));
+        if let Some(text) = &text {
+            // Make sure there is text, and that it is not control characters
+            // (e.g. delete is sent as "\u{f728}" on macOS).
+            if !text.is_empty() && text.chars().all(is_printable_char) {
+                // On some platforms we get here when the user presses Cmd-C (copy), ctrl-W, etc.
+                // We need to ignore these characters that are side-effects of commands.
+                // Also make sure the key is pressed (not released). On Linux, text might
+                // contain some data even when the key is released.
+                let is_cmd = self.egui_input.modifiers.ctrl
+                    || self.egui_input.modifiers.command
+                    || self.egui_input.modifiers.mac_cmd;
+                if pressed && !is_cmd {
+                    self.egui_input
+                        .events
+                        .push(egui::Event::Text(text.to_string()));
+                }
+            }
         }
 
         false
@@ -787,7 +763,6 @@ impl State {
     pub fn handle_platform_output(
         &mut self,
         window: &Window,
-        egui_ctx: &egui::Context,
         platform_output: egui::PlatformOutput,
     ) {
         crate::profile_function!();
@@ -798,12 +773,10 @@ impl State {
             copied_text,
             events: _,                    // handled elsewhere
             mutable_text_under_cursor: _, // only used in eframe web
-            text_cursor_pos,
+            ime,
             #[cfg(feature = "accesskit")]
             accesskit_update,
         } = platform_output;
-
-        self.current_pixels_per_point = egui_ctx.pixels_per_point(); // someone can have changed it to scale the UI
 
         self.set_cursor_icon(window, cursor_icon);
 
@@ -815,19 +788,23 @@ impl State {
             self.clipboard.set(copied_text);
         }
 
-        let allow_ime = text_cursor_pos.is_some();
+        let allow_ime = ime.is_some();
         if self.allow_ime != allow_ime {
             self.allow_ime = allow_ime;
             window.set_ime_allowed(allow_ime);
         }
 
-        if let Some(egui::Pos2 { x, y }) = text_cursor_pos {
+        if let Some(ime) = ime {
+            let rect = ime.rect;
+            let pixels_per_point = pixels_per_point(&self.egui_ctx, window);
             window.set_ime_cursor_area(
-                winit::dpi::LogicalPosition { x, y },
-                winit::dpi::LogicalSize {
-                    // TODO: What size to use? New size arg in winit 0.29
-                    width: 10,
-                    height: 10,
+                winit::dpi::PhysicalPosition {
+                    x: pixels_per_point * rect.min.x,
+                    y: pixels_per_point * rect.min.y,
+                },
+                winit::dpi::PhysicalSize {
+                    width: pixels_per_point * rect.width(),
+                    height: pixels_per_point * rect.height(),
                 },
             );
         }
@@ -864,8 +841,17 @@ impl State {
     }
 }
 
-fn update_viewport_info(viewport_info: &mut ViewportInfo, window: &Window, pixels_per_point: f32) {
+/// Update the given viewport info with the current state of the window.
+///
+/// Call before [`State::take_egui_input`].
+pub fn update_viewport_info(
+    viewport_info: &mut ViewportInfo,
+    egui_ctx: &egui::Context,
+    window: &Window,
+) {
     crate::profile_function!();
+
+    let pixels_per_point = pixels_per_point(egui_ctx, window);
 
     let has_a_position = match window.is_minimized() {
         None | Some(true) => false,
@@ -958,25 +944,31 @@ fn open_url_in_browser(_url: &str) {
     }
 }
 
-fn is_cut_command(modifiers: egui::Modifiers, keycode: winit::keyboard::KeyCode) -> bool {
-    (modifiers.command && keycode == winit::keyboard::KeyCode::KeyX)
-        || (cfg!(target_os = "windows")
-            && modifiers.shift
-            && keycode == winit::keyboard::KeyCode::Delete)
+/// Winit sends special keys (backspace, delete, F1, …) as characters.
+/// Ignore those.
+/// We also ignore '\r', '\n', '\t'.
+/// Newlines are handled by the `Key::Enter` event.
+fn is_printable_char(chr: char) -> bool {
+    let is_in_private_use_area = '\u{e000}' <= chr && chr <= '\u{f8ff}'
+        || '\u{f0000}' <= chr && chr <= '\u{ffffd}'
+        || '\u{100000}' <= chr && chr <= '\u{10fffd}';
+
+    !is_in_private_use_area && !chr.is_ascii_control()
 }
 
-fn is_copy_command(modifiers: egui::Modifiers, keycode: winit::keyboard::KeyCode) -> bool {
-    (modifiers.command && keycode == winit::keyboard::KeyCode::KeyC)
-        || (cfg!(target_os = "windows")
-            && modifiers.ctrl
-            && keycode == winit::keyboard::KeyCode::Insert)
+fn is_cut_command(modifiers: egui::Modifiers, keycode: egui::Key) -> bool {
+    (modifiers.command && keycode == egui::Key::X)
+        || (cfg!(target_os = "windows") && modifiers.shift && keycode == egui::Key::Delete)
 }
 
-fn is_paste_command(modifiers: egui::Modifiers, keycode: winit::keyboard::KeyCode) -> bool {
-    (modifiers.command && keycode == winit::keyboard::KeyCode::KeyV)
-        || (cfg!(target_os = "windows")
-            && modifiers.shift
-            && keycode == winit::keyboard::KeyCode::Insert)
+fn is_copy_command(modifiers: egui::Modifiers, keycode: egui::Key) -> bool {
+    (modifiers.command && keycode == egui::Key::C)
+        || (cfg!(target_os = "windows") && modifiers.ctrl && keycode == egui::Key::Insert)
+}
+
+fn is_paste_command(modifiers: egui::Modifiers, keycode: egui::Key) -> bool {
+    (modifiers.command && keycode == egui::Key::V)
+        || (cfg!(target_os = "windows") && modifiers.shift && keycode == egui::Key::Insert)
 }
 
 fn translate_mouse_button(button: winit::event::MouseButton) -> Option<egui::PointerButton> {
@@ -990,7 +982,62 @@ fn translate_mouse_button(button: winit::event::MouseButton) -> Option<egui::Poi
     }
 }
 
-fn translate_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key> {
+fn key_from_winit_key(key: &winit::keyboard::Key) -> Option<egui::Key> {
+    match key {
+        winit::keyboard::Key::Named(named_key) => key_from_named_key(*named_key),
+        winit::keyboard::Key::Character(str) => egui::Key::from_name(str.as_str()),
+        winit::keyboard::Key::Unidentified(_) | winit::keyboard::Key::Dead(_) => None,
+    }
+}
+
+fn key_from_named_key(named_key: winit::keyboard::NamedKey) -> Option<egui::Key> {
+    use egui::Key;
+    use winit::keyboard::NamedKey;
+
+    match named_key {
+        NamedKey::Enter => Some(Key::Enter),
+        NamedKey::Tab => Some(Key::Tab),
+        NamedKey::Space => Some(Key::Space),
+        NamedKey::ArrowDown => Some(Key::ArrowDown),
+        NamedKey::ArrowLeft => Some(Key::ArrowLeft),
+        NamedKey::ArrowRight => Some(Key::ArrowRight),
+        NamedKey::ArrowUp => Some(Key::ArrowUp),
+        NamedKey::End => Some(Key::End),
+        NamedKey::Home => Some(Key::Home),
+        NamedKey::PageDown => Some(Key::PageDown),
+        NamedKey::PageUp => Some(Key::PageUp),
+        NamedKey::Backspace => Some(Key::Backspace),
+        NamedKey::Delete => Some(Key::Delete),
+        NamedKey::Insert => Some(Key::Insert),
+        NamedKey::Escape => Some(Key::Escape),
+        NamedKey::F1 => Some(Key::F1),
+        NamedKey::F2 => Some(Key::F2),
+        NamedKey::F3 => Some(Key::F3),
+        NamedKey::F4 => Some(Key::F4),
+        NamedKey::F5 => Some(Key::F5),
+        NamedKey::F6 => Some(Key::F6),
+        NamedKey::F7 => Some(Key::F7),
+        NamedKey::F8 => Some(Key::F8),
+        NamedKey::F9 => Some(Key::F9),
+        NamedKey::F10 => Some(Key::F10),
+        NamedKey::F11 => Some(Key::F11),
+        NamedKey::F12 => Some(Key::F12),
+        NamedKey::F13 => Some(Key::F13),
+        NamedKey::F14 => Some(Key::F14),
+        NamedKey::F15 => Some(Key::F15),
+        NamedKey::F16 => Some(Key::F16),
+        NamedKey::F17 => Some(Key::F17),
+        NamedKey::F18 => Some(Key::F18),
+        NamedKey::F19 => Some(Key::F19),
+        NamedKey::F20 => Some(Key::F20),
+        _ => {
+            log::trace!("Unknown key: {named_key:?}");
+            None
+        }
+    }
+}
+
+fn key_from_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key> {
     use egui::Key;
     use winit::keyboard::KeyCode;
 
@@ -1012,6 +1059,11 @@ fn translate_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key> {
         KeyCode::End => Key::End,
         KeyCode::PageUp => Key::PageUp,
         KeyCode::PageDown => Key::PageDown,
+
+        KeyCode::Comma => Key::Comma,
+        KeyCode::Period => Key::Period,
+        // KeyCode::Colon => Key::Colon, // NOTE: there is no physical colon key on an american keyboard
+        KeyCode::Semicolon => Key::Semicolon,
 
         KeyCode::Minus | KeyCode::NumpadSubtract => Key::Minus,
 
@@ -1165,8 +1217,7 @@ fn process_viewport_command(
 
     log::debug!("Processing ViewportCommand::{command:?}");
 
-    let egui_zoom_factor = egui_ctx.zoom_factor();
-    let pixels_per_point = egui_zoom_factor * window.scale_factor() as f32;
+    let pixels_per_point = pixels_per_point(egui_ctx, window);
 
     match command {
         ViewportCommand::Close => {
@@ -1190,7 +1241,12 @@ fn process_viewport_command(
         ViewportCommand::InnerSize(size) => {
             let width_px = pixels_per_point * size.x.max(1.0);
             let height_px = pixels_per_point * size.y.max(1.0);
-            let _ = window.request_inner_size(PhysicalSize::new(width_px, height_px));
+            if window
+                .request_inner_size(PhysicalSize::new(width_px, height_px))
+                .is_some()
+            {
+                log::debug!("ViewportCommand::InnerSize ignored by winit");
+            }
         }
         ViewportCommand::BeginResize(direction) => {
             if let Err(err) = window.drag_resize_window(match direction {
@@ -1274,10 +1330,13 @@ fn process_viewport_command(
                     .expect("Invalid ICON data!")
             }));
         }
-        ViewportCommand::IMEPosition(pos) => {
+        ViewportCommand::IMERect(rect) => {
             window.set_ime_cursor_area(
-                PhysicalPosition::new(pixels_per_point * pos.x, pixels_per_point * pos.y),
-                PhysicalSize::new(100, 100),
+                PhysicalPosition::new(pixels_per_point * rect.min.x, pixels_per_point * rect.min.y),
+                PhysicalSize::new(
+                    pixels_per_point * rect.size().x,
+                    pixels_per_point * rect.size().y,
+                ),
             );
         }
         ViewportCommand::IMEAllowed(v) => window.set_ime_allowed(v),
@@ -1337,6 +1396,26 @@ fn process_viewport_command(
     }
 }
 
+/// Build and intitlaize a window.
+///
+/// Wrapper around `create_winit_window_builder` and `apply_viewport_builder_to_window`.
+pub fn create_window<T>(
+    egui_ctx: &egui::Context,
+    event_loop: &EventLoopWindowTarget<T>,
+    viewport_builder: &ViewportBuilder,
+) -> Result<Window, winit::error::OsError> {
+    crate::profile_function!();
+
+    let window_builder =
+        create_winit_window_builder(egui_ctx, event_loop, viewport_builder.clone());
+    let window = {
+        crate::profile_scope!("WindowBuilder::build");
+        window_builder.build(event_loop)?
+    };
+    apply_viewport_builder_to_window(egui_ctx, &window, viewport_builder);
+    Ok(window)
+}
+
 pub fn create_winit_window_builder<T>(
     egui_ctx: &egui::Context,
     event_loop: &EventLoopWindowTarget<T>,
@@ -1346,6 +1425,8 @@ pub fn create_winit_window_builder<T>(
 
     // We set sizes and positions in egui:s own ui points, which depends on the egui
     // zoom_factor and the native pixels per point, so we need to know that here.
+    // We don't know what monitor the window will appear on though, but
+    // we'll try to fix that after the window is created in the vall to `apply_viewport_builder_to_window`.
     let native_pixels_per_point = event_loop
         .primary_monitor()
         .or_else(|| event_loop.available_monitors().next())
@@ -1390,7 +1471,7 @@ pub fn create_winit_window_builder<T>(
         // wayland:
         app_id: _app_id,
 
-        mouse_passthrough: _, // handled in `apply_viewport_builder_to_new_window`
+        mouse_passthrough: _, // handled in `apply_viewport_builder_to_window`
     } = viewport_builder;
 
     let mut window_builder = winit::window::WindowBuilder::new()
@@ -1423,31 +1504,31 @@ pub fn create_winit_window_builder<T>(
         })
         .with_active(active.unwrap_or(true));
 
-    if let Some(inner_size) = inner_size {
+    if let Some(size) = inner_size {
         window_builder = window_builder.with_inner_size(PhysicalSize::new(
-            pixels_per_point * inner_size.x,
-            pixels_per_point * inner_size.y,
+            pixels_per_point * size.x,
+            pixels_per_point * size.y,
         ));
     }
 
-    if let Some(min_inner_size) = min_inner_size {
+    if let Some(size) = min_inner_size {
         window_builder = window_builder.with_min_inner_size(PhysicalSize::new(
-            pixels_per_point * min_inner_size.x,
-            pixels_per_point * min_inner_size.y,
+            pixels_per_point * size.x,
+            pixels_per_point * size.y,
         ));
     }
 
-    if let Some(max_inner_size) = max_inner_size {
+    if let Some(size) = max_inner_size {
         window_builder = window_builder.with_max_inner_size(PhysicalSize::new(
-            pixels_per_point * max_inner_size.x,
-            pixels_per_point * max_inner_size.y,
+            pixels_per_point * size.x,
+            pixels_per_point * size.y,
         ));
     }
 
-    if let Some(position) = position {
+    if let Some(pos) = position {
         window_builder = window_builder.with_position(PhysicalPosition::new(
-            pixels_per_point * position.x,
-            pixels_per_point * position.y,
+            pixels_per_point * pos.x,
+            pixels_per_point * pos.y,
         ));
     }
 
@@ -1484,10 +1565,51 @@ pub fn create_winit_window_builder<T>(
 }
 
 /// Applies what `create_winit_window_builder` couldn't
-pub fn apply_viewport_builder_to_new_window(window: &Window, builder: &ViewportBuilder) {
+pub fn apply_viewport_builder_to_window(
+    egui_ctx: &egui::Context,
+    window: &Window,
+    builder: &ViewportBuilder,
+) {
     if let Some(mouse_passthrough) = builder.mouse_passthrough {
         if let Err(err) = window.set_cursor_hittest(!mouse_passthrough) {
             log::warn!("set_cursor_hittest failed: {err}");
+        }
+    }
+
+    {
+        // In `create_winit_window_builder` we didn't know
+        // on what monitor the window would appear, so we didn't know
+        // how to translate egui ui point to native physical pixels.
+        // Now we do know:
+
+        let pixels_per_point = pixels_per_point(egui_ctx, window);
+
+        if let Some(size) = builder.inner_size {
+            if window
+                .request_inner_size(PhysicalSize::new(
+                    pixels_per_point * size.x,
+                    pixels_per_point * size.y,
+                ))
+                .is_some()
+            {
+                log::debug!("Failed to set window size");
+            }
+        }
+        if let Some(size) = builder.min_inner_size {
+            window.set_min_inner_size(Some(PhysicalSize::new(
+                pixels_per_point * size.x,
+                pixels_per_point * size.y,
+            )));
+        }
+        if let Some(size) = builder.max_inner_size {
+            window.set_max_inner_size(Some(PhysicalSize::new(
+                pixels_per_point * size.x,
+                pixels_per_point * size.y,
+            )));
+        }
+        if let Some(pos) = builder.position {
+            let pos = PhysicalPosition::new(pixels_per_point * pos.x, pixels_per_point * pos.y);
+            window.set_outer_position(pos);
         }
     }
 }

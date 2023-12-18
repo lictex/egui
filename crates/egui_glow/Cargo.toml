@@ -38,7 +38,7 @@ winit = ["egui-winit"]
 
 
 [dependencies]
-egui = { version = "0.24.0", path = "../egui", default-features = false, features = ["bytemuck"] }
+egui = { version = "0.24.1", path = "../egui", default-features = false, features = ["bytemuck"] }
 
 bytemuck = "1.7"
 glow = "0.12"
@@ -51,7 +51,7 @@ document-features = { version = "0.2", optional = true }
 
 # Native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-egui-winit = { version = "0.24.0", path = "../egui-winit", optional = true, default-features = false }
+egui-winit = { version = "0.24.1", path = "../egui-winit", optional = true, default-features = false }
 puffin = { workspace = true, optional = true }
 
 # Web:
