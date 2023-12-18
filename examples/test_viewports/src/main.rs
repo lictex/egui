@@ -12,10 +12,11 @@ fn main() {
     let _ = eframe::run_native(
         "Viewports",
         eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size([450.0, 400.0]),
+
             #[cfg(feature = "wgpu")]
             renderer: eframe::Renderer::Wgpu,
 
-            initial_window_size: Some(egui::Vec2::new(450.0, 400.0)),
             ..Default::default()
         },
         Box::new(|_| Box::<App>::default()),
@@ -78,7 +79,7 @@ impl ViewportState {
             });
         } else {
             let count = Arc::new(RwLock::new(0));
-            ctx.show_viewport(vp_id, viewport, move |ctx, class| {
+            ctx.show_viewport_deferred(vp_id, viewport, move |ctx, class| {
                 let mut vp_state = vp_state.write();
                 let count = count.clone();
                 show_as_popup(
@@ -177,7 +178,7 @@ fn show_as_popup(
         // Not a real viewport
         egui::Window::new(title).id(id).show(ctx, content);
     } else {
-        egui::CentralPanel::default().show(ctx, |ui| ui.push_id(id, content));
+        egui::CentralPanel::default().show(ctx, content);
     }
 }
 
@@ -235,30 +236,6 @@ fn generic_ui(ui: &mut egui::Ui, children: &[Arc<RwLock<ViewportState>>]) {
             outer_rect.size()
         ));
     }
-
-    let tmp_pixels_per_point = ctx.pixels_per_point();
-    let mut pixels_per_point = ui.data_mut(|data| {
-        *data.get_temp_mut_or(container_id.with("pixels_per_point"), tmp_pixels_per_point)
-    });
-    let res = ui.add(
-        egui::DragValue::new(&mut pixels_per_point)
-            .prefix("Pixels per Point: ")
-            .speed(0.1)
-            .clamp_range(0.5..=4.0),
-    );
-    if res.drag_released() {
-        ctx.set_pixels_per_point(pixels_per_point);
-    }
-    if res.dragged() {
-        ui.data_mut(|data| {
-            data.insert_temp(container_id.with("pixels_per_point"), pixels_per_point);
-        });
-    } else {
-        ui.data_mut(|data| {
-            data.insert_temp(container_id.with("pixels_per_point"), tmp_pixels_per_point);
-        });
-    }
-    egui::gui_zoom::zoom_with_keyboard_shortcuts(&ctx);
 
     if ctx.viewport_id() != ctx.parent_viewport_id() {
         let parent = ctx.parent_viewport_id();

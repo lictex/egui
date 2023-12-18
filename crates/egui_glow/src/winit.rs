@@ -1,7 +1,7 @@
 pub use egui_winit;
 pub use egui_winit::EventResponse;
 
-use egui::{ViewportId, ViewportIdPair, ViewportOutput};
+use egui::{ViewportId, ViewportOutput};
 use egui_winit::winit;
 
 use crate::shader_version::ShaderVersion;
@@ -24,7 +24,7 @@ impl EguiGlow {
     /// For automatic shader version detection set `shader_version` to `None`.
     pub fn new<E>(
         event_loop: &winit::event_loop::EventLoopWindowTarget<E>,
-        gl: std::sync::Arc<glow::Context>,
+        gl: std::rc::Rc<glow::Context>,
         shader_version: Option<ShaderVersion>,
         native_pixels_per_point: Option<f32>,
     ) -> Self {
@@ -35,6 +35,7 @@ impl EguiGlow {
             .unwrap();
 
         let egui_winit = egui_winit::State::new(
+            ViewportId::ROOT,
             event_loop,
             native_pixels_per_point,
             Some(painter.max_texture_side()),
@@ -52,16 +53,13 @@ impl EguiGlow {
         }
     }
 
-    pub fn on_event(&mut self, event: &winit::event::WindowEvent) -> EventResponse {
-        self.egui_winit
-            .on_event(&self.egui_ctx, event, ViewportId::ROOT)
+    pub fn on_window_event(&mut self, event: &winit::event::WindowEvent) -> EventResponse {
+        self.egui_winit.on_window_event(&self.egui_ctx, event)
     }
 
     /// Call [`Self::paint`] later to paint.
     pub fn run(&mut self, window: &winit::window::Window, run_ui: impl FnMut(&egui::Context)) {
-        let raw_input = self
-            .egui_winit
-            .take_egui_input(window, ViewportIdPair::ROOT);
+        let raw_input = self.egui_winit.take_egui_input(window);
 
         let egui::FullOutput {
             platform_output,
@@ -77,6 +75,7 @@ impl EguiGlow {
         for (_, ViewportOutput { commands, .. }) in viewport_output {
             let mut screenshot_requested = false;
             egui_winit::process_viewport_commands(
+                &self.egui_ctx,
                 &mut self.viewport_info,
                 commands,
                 window,
@@ -88,12 +87,8 @@ impl EguiGlow {
             }
         }
 
-        self.egui_winit.handle_platform_output(
-            window,
-            ViewportId::ROOT,
-            &self.egui_ctx,
-            platform_output,
-        );
+        self.egui_winit
+            .handle_platform_output(window, &self.egui_ctx, platform_output);
 
         self.shapes = shapes;
         self.pixels_per_point = pixels_per_point;

@@ -81,9 +81,9 @@ const MIN_LINE_SPACING_IN_POINTS: f64 = 6.0; // TODO(emilk): large enough for a 
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Clone)]
 struct PlotMemory {
-    /// Indicates if the user has modified the bounds, for example by moving or zooming,
-    /// or if the bounds should be calculated based by included point or auto bounds.
-    bounds_modified: Vec2b,
+    /// Indicates if the plot uses automatic bounds. This is disengaged whenever the user modifies
+    /// the bounds, for example by moving or zooming.
+    auto_bounds: Vec2b,
 
     hovered_entry: Option<String>,
     hidden_items: ahash::HashSet<String>,
@@ -137,7 +137,7 @@ struct CursorLinkGroups(HashMap<Id, Vec<PlotFrameCursors>>);
 #[derive(Clone)]
 struct LinkedBounds {
     bounds: PlotBounds,
-    bounds_modified: Vec2b,
+    auto_bounds: Vec2b,
 }
 
 #[derive(Default, Clone)]
@@ -183,7 +183,7 @@ pub struct Plot {
     allow_scroll: bool,
     allow_double_click_reset: bool,
     allow_boxed_zoom: bool,
-    auto_bounds: Vec2b,
+    default_auto_bounds: Vec2b,
     min_auto_bounds: PlotBounds,
     margin_fraction: Vec2,
     boxed_zoom_pointer_button: PointerButton,
@@ -225,7 +225,7 @@ impl Plot {
             allow_scroll: true,
             allow_double_click_reset: true,
             allow_boxed_zoom: true,
-            auto_bounds: false.into(),
+            default_auto_bounds: false.into(),
             min_auto_bounds: PlotBounds::NOTHING,
             margin_fraction: Vec2::splat(0.05),
             boxed_zoom_pointer_button: PointerButton::Secondary,
@@ -501,14 +501,14 @@ impl Plot {
     /// Expand bounds to fit all items across the x axis, including values given by `include_x`.
     #[inline]
     pub fn auto_bounds_x(mut self) -> Self {
-        self.auto_bounds.x = true;
+        self.default_auto_bounds.x = true;
         self
     }
 
     /// Expand bounds to fit all items across the y axis, including values given by `include_y`.
     #[inline]
     pub fn auto_bounds_y(mut self) -> Self {
-        self.auto_bounds.y = true;
+        self.default_auto_bounds.y = true;
         self
     }
 
@@ -711,8 +711,8 @@ impl Plot {
             allow_scroll,
             allow_double_click_reset,
             allow_boxed_zoom,
-            boxed_zoom_pointer_button: boxed_zoom_pointer,
-            auto_bounds,
+            boxed_zoom_pointer_button,
+            default_auto_bounds,
             min_auto_bounds,
             margin_fraction,
             width,
@@ -854,7 +854,7 @@ impl Plot {
             PlotMemory::load(ui.ctx(), plot_id)
         }
         .unwrap_or_else(|| PlotMemory {
-            bounds_modified: false.into(),
+            auto_bounds: default_auto_bounds,
             hovered_entry: None,
             hidden_items: Default::default(),
             last_plot_transform: PlotTransform::new(
@@ -867,7 +867,7 @@ impl Plot {
         });
 
         let PlotMemory {
-            mut bounds_modified,
+            mut auto_bounds,
             mut hovered_entry,
             mut hidden_items,
             last_plot_transform,
@@ -879,6 +879,7 @@ impl Plot {
             items: Vec::new(),
             next_auto_color_idx: 0,
             last_plot_transform,
+            last_auto_bounds: auto_bounds,
             response,
             bounds_modifications: Vec::new(),
             ctx: ui.ctx().clone(),
@@ -963,19 +964,19 @@ impl Plot {
                 if let Some(linked_bounds) = link_groups.0.get(id) {
                     if axes.x {
                         bounds.set_x(&linked_bounds.bounds);
-                        bounds_modified.x = linked_bounds.bounds_modified.x;
+                        auto_bounds.x = linked_bounds.auto_bounds.x;
                     }
                     if axes.y {
                         bounds.set_y(&linked_bounds.bounds);
-                        bounds_modified.y = linked_bounds.bounds_modified.y;
+                        auto_bounds.y = linked_bounds.auto_bounds.y;
                     }
                 };
             });
         };
 
-        // Allow double clicking to reset to the initial bounds.
+        // Allow double-clicking to reset to the initial bounds.
         if allow_double_click_reset && response.double_clicked() {
-            bounds_modified = false.into();
+            auto_bounds = true.into();
         }
 
         // Apply bounds modifications.
@@ -983,25 +984,26 @@ impl Plot {
             match modification {
                 BoundsModification::Set(new_bounds) => {
                     bounds = new_bounds;
-                    bounds_modified = true.into();
+                    auto_bounds = false.into();
                 }
                 BoundsModification::Translate(delta) => {
                     bounds.translate(delta);
-                    bounds_modified = true.into();
+                    auto_bounds = false.into();
                 }
+                BoundsModification::AutoBounds(new_auto_bounds) => auto_bounds = new_auto_bounds,
             }
         }
 
         // Reset bounds to initial bounds if they haven't been modified.
-        if !bounds_modified.x {
+        if auto_bounds.x {
             bounds.set_x(&min_auto_bounds);
         }
-        if !bounds_modified.y {
+        if auto_bounds.y {
             bounds.set_y(&min_auto_bounds);
         }
 
-        let auto_x = !bounds_modified.x && (!min_auto_bounds.is_valid_x() || auto_bounds.x);
-        let auto_y = !bounds_modified.y && (!min_auto_bounds.is_valid_y() || auto_bounds.y);
+        let auto_x = auto_bounds.x && (!min_auto_bounds.is_valid_x() || default_auto_bounds.x);
+        let auto_y = auto_bounds.y && (!min_auto_bounds.is_valid_y() || default_auto_bounds.y);
 
         // Set bounds automatically based on content.
         if auto_x || auto_y {
@@ -1031,7 +1033,7 @@ impl Plot {
             if let Some((_, linked_axes)) = &linked_axes {
                 let change_x = linked_axes.y && !linked_axes.x;
                 transform.set_aspect_by_changing_axis(data_aspect as f64, change_x);
-            } else if auto_bounds.any() {
+            } else if default_auto_bounds.any() {
                 transform.set_aspect_by_expanding(data_aspect as f64);
             } else {
                 transform.set_aspect_by_changing_axis(data_aspect as f64, false);
@@ -1049,14 +1051,14 @@ impl Plot {
                 delta.y = 0.0;
             }
             transform.translate_bounds(delta);
-            bounds_modified = allow_drag;
+            auto_bounds = !allow_drag;
         }
 
         // Zooming
         let mut boxed_zoom_rect = None;
         if allow_boxed_zoom {
             // Save last click to allow boxed zooming
-            if response.drag_started() && response.dragged_by(boxed_zoom_pointer) {
+            if response.drag_started() && response.dragged_by(boxed_zoom_pointer_button) {
                 // it would be best for egui that input has a memory of the last click pos because it's a common pattern
                 last_click_pos_for_zoom = response.hover_pos();
             }
@@ -1064,7 +1066,7 @@ impl Plot {
             let box_end_pos = response.hover_pos();
             if let (Some(box_start_pos), Some(box_end_pos)) = (box_start_pos, box_end_pos) {
                 // while dragging prepare a Shape and draw it later on top of the plot
-                if response.dragged_by(boxed_zoom_pointer) {
+                if response.dragged_by(boxed_zoom_pointer_button) {
                     response = response.on_hover_cursor(CursorIcon::ZoomIn);
                     let rect = epaint::Rect::from_two_pos(box_start_pos, box_end_pos);
                     boxed_zoom_rect = Some((
@@ -1096,7 +1098,7 @@ impl Plot {
                     };
                     if new_bounds.is_valid() {
                         transform.set_bounds(new_bounds);
-                        bounds_modified = true.into();
+                        auto_bounds = false.into();
                     }
                     // reset the boxed zoom state
                     last_click_pos_for_zoom = None;
@@ -1120,14 +1122,14 @@ impl Plot {
                 }
                 if zoom_factor != Vec2::splat(1.0) {
                     transform.zoom(zoom_factor, hover_pos);
-                    bounds_modified = allow_zoom;
+                    auto_bounds = !allow_zoom;
                 }
             }
             if allow_scroll {
                 let scroll_delta = ui.input(|i| i.scroll_delta);
                 if scroll_delta != Vec2::ZERO {
                     transform.translate_bounds(-scroll_delta);
-                    bounds_modified = true.into();
+                    auto_bounds = false.into();
                 }
             }
         }
@@ -1220,14 +1222,14 @@ impl Plot {
                     *id,
                     LinkedBounds {
                         bounds: *transform.bounds(),
-                        bounds_modified,
+                        auto_bounds,
                     },
                 );
             });
         }
 
         let memory = PlotMemory {
-            bounds_modified,
+            auto_bounds,
             hovered_entry,
             hidden_items,
             last_plot_transform: transform,
@@ -1327,6 +1329,7 @@ fn axis_widgets(
 enum BoundsModification {
     Set(PlotBounds),
     Translate(Vec2),
+    AutoBounds(Vec2b),
 }
 
 /// Provides methods to interact with a plot while building it. It is the single argument of the closure
@@ -1335,6 +1338,7 @@ pub struct PlotUi {
     items: Vec<Box<dyn PlotItem>>,
     next_auto_color_idx: usize,
     last_plot_transform: PlotTransform,
+    last_auto_bounds: Vec2b,
     response: Response,
     bounds_modifications: Vec<BoundsModification>,
     ctx: Context,
@@ -1370,6 +1374,18 @@ impl PlotUi {
     pub fn translate_bounds(&mut self, delta_pos: Vec2) {
         self.bounds_modifications
             .push(BoundsModification::Translate(delta_pos));
+    }
+
+    /// Whether the plot axes were in auto-bounds mode in the last frame. If called on the first
+    /// frame, this is the [`Plot`]'s default auto-bounds mode.
+    pub fn auto_bounds(&self) -> Vec2b {
+        self.last_auto_bounds
+    }
+
+    /// Set the auto-bounds mode for the plot axes.
+    pub fn set_auto_bounds(&mut self, auto_bounds: Vec2b) {
+        self.bounds_modifications
+            .push(BoundsModification::AutoBounds(auto_bounds));
     }
 
     /// Can be used to check if the plot was hovered or clicked.
@@ -1829,7 +1845,7 @@ impl PreparedPlot {
             return Vec::new();
         }
 
-        let interact_radius_sq: f32 = (16.0f32).powi(2);
+        let interact_radius_sq = (16.0_f32).powi(2);
 
         let candidates = items.iter().filter_map(|item| {
             let item = &**item;

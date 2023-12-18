@@ -6,18 +6,12 @@
 
 #![warn(missing_docs)] // Let's keep `epi` well-documented.
 
-#[cfg(not(target_arch = "wasm32"))]
-mod icon_data;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub use icon_data::IconData;
-
 #[cfg(target_arch = "wasm32")]
 use std::any::Any;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(any(feature = "glow", feature = "wgpu"))]
-pub use crate::native::run::UserEvent;
+pub use crate::native::winit_integration::UserEvent;
 
 #[cfg(not(target_arch = "wasm32"))]
 use raw_window_handle::{
@@ -70,7 +64,7 @@ pub struct CreationContext<'s> {
     ///
     /// Only available when compiling with the `glow` feature and using [`Renderer::Glow`].
     #[cfg(feature = "glow")]
-    pub gl: Option<std::sync::Arc<glow::Context>>,
+    pub gl: Option<std::rc::Rc<glow::Context>>,
 
     /// The underlying WGPU render state.
     ///
@@ -122,7 +116,7 @@ pub trait App {
     /// To force a repaint, call [`egui::Context::request_repaint`] at any time (e.g. from another thread).
     ///
     /// This is called for the root viewport ([`egui::ViewportId::ROOT`]).
-    /// Use [`egui::Context::show_viewport`] to spawn additional viewports (windows).
+    /// Use [`egui::Context::show_viewport_deferred`] to spawn additional viewports (windows).
     /// (A "viewport" in egui means an native OS window).
     fn update(&mut self, ctx: &egui::Context, frame: &mut Frame);
 
@@ -155,25 +149,10 @@ pub trait App {
     /// On native the path is picked using [`crate::storage_dir`].
     fn save(&mut self, _storage: &mut dyn Storage) {}
 
-    /// Called when the user attempts to close the desktop window and/or quit the application.
-    ///
-    /// By returning `false` the closing will be aborted. To continue the closing return `true`.
-    ///
-    /// A scenario where this method will be run is after pressing the close button on a native
-    /// window, which allows you to ask the user whether they want to do something before exiting.
-    /// See the example at <https://github.com/emilk/egui/blob/master/examples/confirm_exit/> for practical usage.
-    ///
-    /// It will _not_ be called on the web or when the window is forcefully closed.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[doc(alias = "exit")]
-    #[doc(alias = "quit")]
-    fn on_close_event(&mut self) -> bool {
-        true
-    }
-
     /// Called once on shutdown, after [`Self::save`].
     ///
-    /// If you need to abort an exit use [`Self::on_close_event`].
+    /// If you need to abort an exit check `ctx.input(|i| i.viewport().close_requested())`
+    /// and respond with [`egui::ViewportCommand::CancelClose`].
     ///
     /// To get a [`glow`] context you need to compile with the `glow` feature flag,
     /// and run eframe with the glow backend.
@@ -218,18 +197,6 @@ pub trait App {
     fn persist_egui_memory(&self) -> bool {
         true
     }
-
-    /// If `true` a warm-up call to [`Self::update`] will be issued where
-    /// `ctx.memory(|mem| mem.everything_is_visible())` will be set to `true`.
-    ///
-    /// This can help pre-caching resources loaded by different parts of the UI, preventing stutter later on.
-    ///
-    /// In this warm-up call, all painted shapes will be ignored.
-    ///
-    /// The default is `false`, and it is unlikely you will want to change this.
-    fn warm_up_enabled(&self) -> bool {
-        false
-    }
 }
 
 /// Selects the level of hardware graphics acceleration.
@@ -250,74 +217,26 @@ pub enum HardwareAcceleration {
 
 /// Options controlling the behavior of a native window.
 ///
-/// Only a single native window is currently supported.
+/// Addintional windows can be opened using (egui viewports)[`egui::viewport`].
+///
+/// Set the window title and size using [`Self::viewport`].
+///
+/// ### Application id
+/// [`egui::ViewportBuilder::with_app_id`] is used for determining the folder to persist the app to.
+///
+/// On native the path is picked using [`crate::storage_dir`].
+///
+/// If you don't set an app id, the title argument to [`crate::run_native`]
+/// will be used as app id instead.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct NativeOptions {
-    /// Sets whether or not the window will always be on top of other windows at initialization.
-    pub always_on_top: bool,
-
-    /// Show window in maximized mode
-    pub maximized: bool,
-
-    /// On desktop: add window decorations (i.e. a frame around your app)?
-    /// If false it will be difficult to move and resize the app.
-    pub decorated: bool,
-
-    /// Start in (borderless) fullscreen?
+    /// Controls the native window of the root viewport.
     ///
-    /// Default: `false`.
-    pub fullscreen: bool,
-
-    /// On Mac: the window doesn't have a titlebar, but floating window buttons.
+    /// This is where you set things like window title and size.
     ///
-    /// See [winit's documentation][with_fullsize_content_view] for information on Mac-specific options.
-    ///
-    /// [with_fullsize_content_view]: https://docs.rs/winit/latest/x86_64-apple-darwin/winit/platform/macos/trait.WindowBuilderExtMacOS.html#tymethod.with_fullsize_content_view
-    #[cfg(target_os = "macos")]
-    pub fullsize_content: bool,
-
-    /// On Windows: enable drag and drop support. Drag and drop can
-    /// not be disabled on other platforms.
-    ///
-    /// See [winit's documentation][drag_and_drop] for information on why you
-    /// might want to disable this on windows.
-    ///
-    /// [drag_and_drop]: https://docs.rs/winit/latest/x86_64-pc-windows-msvc/winit/platform/windows/trait.WindowBuilderExtWindows.html#tymethod.with_drag_and_drop
-    pub drag_and_drop_support: bool,
-
-    /// The application icon, e.g. in the Windows task bar or the alt-tab menu.
-    ///
-    /// The default icon is a white `e` on a black background (for "egui" or "eframe").
-    /// If you prefer the OS default, set this to `None`.
-    pub icon_data: Option<IconData>,
-
-    /// The initial (inner) position of the native window in points (logical pixels).
-    pub initial_window_pos: Option<egui::Pos2>,
-
-    /// The initial inner size of the native window in points (logical pixels).
-    pub initial_window_size: Option<egui::Vec2>,
-
-    /// The minimum inner window size in points (logical pixels).
-    pub min_window_size: Option<egui::Vec2>,
-
-    /// The maximum inner window size in points (logical pixels).
-    pub max_window_size: Option<egui::Vec2>,
-
-    /// Should the app window be resizable?
-    pub resizable: bool,
-
-    /// On desktop: make the window transparent.
-    ///
-    /// You control the transparency with [`App::clear_color()`].
-    /// You should avoid having a [`egui::CentralPanel`], or make sure its frame is also transparent.
-    pub transparent: bool,
-
-    /// On desktop: mouse clicks pass through the window, used for non-interactable overlays
-    /// Generally you would use this in conjunction with always_on_top
-    pub mouse_passthrough: bool,
-
-    /// Whether grant focus when window initially opened. True by default.
-    pub active: bool,
+    /// If you don't set an icon, a default egui icon will be used.
+    /// To avoid this, set the icon to [`egui::IconData::default`].
+    pub viewport: egui::ViewportBuilder,
 
     /// Turn on vertical syncing, limiting the FPS to the display refresh rate.
     ///
@@ -419,47 +338,6 @@ pub struct NativeOptions {
     #[cfg(feature = "wgpu")]
     pub wgpu_options: egui_wgpu::WgpuConfiguration,
 
-    /// The application id, used for determining the folder to persist the app to.
-    ///
-    /// On native the path is picked using [`crate::storage_dir`].
-    ///
-    /// If you don't set [`Self::app_id`], the title argument to [`crate::run_native`]
-    /// will be used as app id instead.
-    ///
-    /// ### On Wayland
-    /// On Wayland this sets the Application ID for the window.
-    ///
-    /// The application ID is used in several places of the compositor, e.g. for
-    /// grouping windows of the same application. It is also important for
-    /// connecting the configuration of a `.desktop` file with the window, by
-    /// using the application ID as file name. This allows e.g. a proper icon
-    /// handling under Wayland.
-    ///
-    /// See [Waylands XDG shell documentation][xdg-shell] for more information
-    /// on this Wayland-specific option.
-    ///
-    /// [xdg-shell]: https://wayland.app/protocols/xdg-shell#xdg_toplevel:request:set_app_id
-    ///
-    /// # Example
-    /// ``` no_run
-    /// fn main() -> eframe::Result<()> {
-    ///
-    ///     let mut options = eframe::NativeOptions::default();
-    ///     // Set the application ID for Wayland only on Linux
-    ///     #[cfg(target_os = "linux")]
-    ///     {
-    ///         options.app_id = Some("egui-example".to_string());
-    ///     }
-    ///
-    ///     eframe::run_simple_native("My egui App", options, move |ctx, _frame| {
-    ///         egui::CentralPanel::default().show(ctx, |ui| {
-    ///             ui.heading("My egui Application");
-    ///         });
-    ///     })
-    /// }
-    /// ```
-    pub app_id: Option<String>,
-
     /// Controls whether or not the native window position and size will be
     /// persisted (only if the "persistence" feature is enabled).
     pub persist_window: bool,
@@ -469,7 +347,7 @@ pub struct NativeOptions {
 impl Clone for NativeOptions {
     fn clone(&self) -> Self {
         Self {
-            icon_data: self.icon_data.clone(),
+            viewport: self.viewport.clone(),
 
             #[cfg(any(feature = "glow", feature = "wgpu"))]
             event_loop_builder: None, // Skip any builder callbacks if cloning
@@ -480,8 +358,6 @@ impl Clone for NativeOptions {
             #[cfg(feature = "wgpu")]
             wgpu_options: self.wgpu_options.clone(),
 
-            app_id: self.app_id.clone(),
-
             ..*self
         }
     }
@@ -491,29 +367,7 @@ impl Clone for NativeOptions {
 impl Default for NativeOptions {
     fn default() -> Self {
         Self {
-            always_on_top: false,
-            maximized: false,
-            decorated: true,
-            fullscreen: false,
-
-            #[cfg(target_os = "macos")]
-            fullsize_content: false,
-
-            // We set a default "egui" or "eframe" icon, which is usually more distinctive than the default OS icon.
-            icon_data: Some(
-                IconData::try_from_png_bytes(&include_bytes!("../../data/icon.png")[..]).unwrap(),
-            ),
-
-            drag_and_drop_support: true,
-            initial_window_pos: None,
-            initial_window_size: None,
-            min_window_size: None,
-            max_window_size: None,
-            resizable: true,
-            transparent: false,
-            mouse_passthrough: false,
-
-            active: true,
+            viewport: Default::default(),
 
             vsync: true,
             multisampling: 0,
@@ -541,8 +395,6 @@ impl Default for NativeOptions {
 
             #[cfg(feature = "wgpu")]
             wgpu_options: egui_wgpu::WgpuConfiguration::default(),
-
-            app_id: None,
 
             persist_window: true,
         }
@@ -732,7 +584,7 @@ pub struct Frame {
 
     /// A reference to the underlying [`glow`] (OpenGL) context.
     #[cfg(feature = "glow")]
-    pub(crate) gl: Option<std::sync::Arc<glow::Context>>,
+    pub(crate) gl: Option<std::rc::Rc<glow::Context>>,
 
     /// Can be used to manage GPU resources for custom rendering with WGPU using [`egui::PaintCallback`]s.
     #[cfg(feature = "wgpu")]
@@ -804,7 +656,7 @@ impl Frame {
     /// To get a [`glow`] context you need to compile with the `glow` feature flag,
     /// and run eframe using [`Renderer::Glow`].
     #[cfg(feature = "glow")]
-    pub fn gl(&self) -> Option<&std::sync::Arc<glow::Context>> {
+    pub fn gl(&self) -> Option<&std::rc::Rc<glow::Context>> {
         self.gl.as_ref()
     }
 

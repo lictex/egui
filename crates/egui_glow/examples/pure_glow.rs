@@ -154,7 +154,7 @@ fn main() {
         .build()
         .unwrap();
     let (gl_window, gl) = create_display(&event_loop);
-    let gl = std::sync::Arc::new(gl);
+    let gl = std::rc::Rc::new(gl);
 
     let mut egui_glow = egui_glow::EguiGlow::new(&event_loop, gl.clone(), None, None);
 
@@ -190,10 +190,10 @@ fn main() {
                 event_loop_window_target.set_control_flow(if repaint_delay.is_zero() {
                     gl_window.window().request_redraw();
                     winit::event_loop::ControlFlow::Poll
-                } else if let Some(repaint_delay_instant) =
+                } else if let Some(repaint_after_instant) =
                     std::time::Instant::now().checked_add(repaint_delay)
                 {
-                    winit::event_loop::ControlFlow::WaitUntil(repaint_delay_instant)
+                    winit::event_loop::ControlFlow::WaitUntil(repaint_after_instant)
                 } else {
                     winit::event_loop::ControlFlow::Wait
                 });
@@ -221,6 +221,8 @@ fn main() {
             // Platform-dependent event handlers to workaround a winit bug
             // See: https://github.com/rust-windowing/winit/issues/987
             // See: https://github.com/rust-windowing/winit/issues/1619
+            // winit::event::Event::RedrawEventsCleared if cfg!(target_os = "windows") => redraw(),
+            // winit::event::Event::RedrawRequested(_) if !cfg!(target_os = "windows") => redraw(),
             // TODO: Adopt to above comment (if still relevant)
             winit::event::Event::WindowEvent { event, .. } => {
                 use winit::event::WindowEvent;
@@ -238,7 +240,7 @@ fn main() {
                     gl_window.resize(*physical_size);
                 }
 
-                let event_response = egui_glow.on_event(&event);
+                let event_response = egui_glow.on_window_event(&event);
 
                 if event_response.repaint {
                     gl_window.window().request_redraw();

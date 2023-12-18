@@ -33,9 +33,7 @@ impl super::Demo for ExtraViewport {
                         });
                 } else {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        ui.push_id(id, |ui| {
-                            viewport_content(ui, ctx, open);
-                        })
+                        viewport_content(ui, ctx, open);
                     });
                 }
             },
@@ -66,7 +64,7 @@ fn viewport_content(ui: &mut egui::Ui, ctx: &egui::Context, open: &mut bool) {
         }
     });
 
-    if ui.input(|i| i.viewport().close_requested) {
+    if ui.input(|i| i.viewport().close_requested()) {
         *open = false;
     }
 }

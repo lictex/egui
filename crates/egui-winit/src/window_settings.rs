@@ -18,8 +18,10 @@ pub struct WindowSettings {
 }
 
 impl WindowSettings {
-    pub fn from_display(window: &winit::window::Window) -> Self {
-        let inner_size_points = window.inner_size().to_logical::<f32>(window.scale_factor());
+    pub fn from_window(egui_zoom_factor: f32, window: &winit::window::Window) -> Self {
+        let inner_size_points = window
+            .inner_size()
+            .to_logical::<f32>(egui_zoom_factor as f64 * window.scale_factor());
 
         let inner_position_pixels = window
             .inner_position()
@@ -52,6 +54,8 @@ impl WindowSettings {
         &self,
         mut viewport_builder: ViewportBuilder,
     ) -> ViewportBuilder {
+        crate::profile_function!();
+
         // `WindowBuilder::with_position` expects inner position in Macos, and outer position elsewhere
         // See [`winit::window::WindowBuilder::with_position`] for details.
         let pos_px = if cfg!(target_os = "macos") {
@@ -98,6 +102,7 @@ impl WindowSettings {
 
     pub fn clamp_position_to_monitors<E>(
         &mut self,
+        egui_zoom_factor: f32,
         event_loop: &winit::event_loop::EventLoopWindowTarget<E>,
     ) {
         // If the app last ran on two monitors and only one is now connected, then
@@ -114,19 +119,22 @@ impl WindowSettings {
         };
 
         if let Some(pos_px) = &mut self.inner_position_pixels {
-            clamp_pos_to_monitors(event_loop, inner_size_points, pos_px);
+            clamp_pos_to_monitors(egui_zoom_factor, event_loop, inner_size_points, pos_px);
         }
         if let Some(pos_px) = &mut self.outer_position_pixels {
-            clamp_pos_to_monitors(event_loop, inner_size_points, pos_px);
+            clamp_pos_to_monitors(egui_zoom_factor, event_loop, inner_size_points, pos_px);
         }
     }
 }
 
 fn clamp_pos_to_monitors<E>(
+    egui_zoom_factor: f32,
     event_loop: &winit::event_loop::EventLoopWindowTarget<E>,
     window_size_pts: egui::Vec2,
     position_px: &mut egui::Pos2,
 ) {
+    crate::profile_function!();
+
     let monitors = event_loop.available_monitors();
 
     // default to primary monitor, in case the correct monitor was disconnected.
@@ -138,7 +146,7 @@ fn clamp_pos_to_monitors<E>(
     };
 
     for monitor in monitors {
-        let window_size_px = window_size_pts * (monitor.scale_factor() as f32);
+        let window_size_px = window_size_pts * (egui_zoom_factor * monitor.scale_factor() as f32);
         let monitor_x_range = (monitor.position().x - window_size_px.x as i32)
             ..(monitor.position().x + monitor.size().width as i32);
         let monitor_y_range = (monitor.position().y - window_size_px.y as i32)
@@ -151,10 +159,14 @@ fn clamp_pos_to_monitors<E>(
         }
     }
 
-    let mut window_size_px = window_size_pts * (active_monitor.scale_factor() as f32);
+    let mut window_size_px =
+        window_size_pts * (egui_zoom_factor * active_monitor.scale_factor() as f32);
     // Add size of title bar. This is 32 px by default in Win 10/11.
     if cfg!(target_os = "windows") {
-        window_size_px += egui::Vec2::new(0.0, 32.0 * active_monitor.scale_factor() as f32);
+        window_size_px += egui::Vec2::new(
+            0.0,
+            32.0 * egui_zoom_factor * active_monitor.scale_factor() as f32,
+        );
     }
     let monitor_position = egui::Pos2::new(
         active_monitor.position().x as f32,
