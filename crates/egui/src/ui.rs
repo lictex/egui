@@ -1,4 +1,5 @@
 #![warn(missing_docs)] // Let's keep `Ui` well-documented.
+#![allow(clippy::use_self)]
 
 use std::hash::Hash;
 use std::sync::Arc;
@@ -2275,7 +2276,8 @@ fn register_rect(ui: &Ui, rect: Rect) {
     if !callstack.is_empty() {
         let font_id = FontId::monospace(12.0);
         let text = format!("{callstack}\n\n(click to copy)");
-        let galley = painter.layout_no_wrap(text, font_id, Color32::WHITE);
+        let text_color = Color32::WHITE;
+        let galley = painter.layout_no_wrap(text, font_id, text_color);
 
         // Position the text either under or above:
         let screen_rect = ui.ctx().screen_rect();
@@ -2305,7 +2307,7 @@ fn register_rect(ui: &Ui, rect: Rect) {
         };
         let text_rect = Rect::from_min_size(text_pos, galley.size());
         painter.rect(text_rect, 0.0, text_bg_color, (1.0, text_rect_stroke_color));
-        painter.galley(text_pos, galley);
+        painter.galley(text_pos, galley, text_color);
 
         if ui.input(|i| i.pointer.any_click()) {
             ui.ctx().copy_text(callstack);

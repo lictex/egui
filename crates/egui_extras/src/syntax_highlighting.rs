@@ -3,6 +3,8 @@
 //! Turn on the `syntect` feature for great syntax highlighting of any language.
 //! Otherwise, a very simple fallback will be used, that works okish for C, C++, Rust, and Python.
 
+#![allow(clippy::mem_forget)] // False positive from enum_map macro
+
 use egui::text::LayoutJob;
 
 /// View some code with syntax highlighting and selection.
@@ -160,12 +162,12 @@ impl CodeTheme {
         if ctx.style().visuals.dark_mode {
             ctx.data_mut(|d| {
                 d.get_persisted(egui::Id::new("dark"))
-                    .unwrap_or_else(CodeTheme::dark)
+                    .unwrap_or_else(Self::dark)
             })
         } else {
             ctx.data_mut(|d| {
                 d.get_persisted(egui::Id::new("light"))
-                    .unwrap_or_else(CodeTheme::light)
+                    .unwrap_or_else(Self::light)
             })
         }
     }
@@ -277,9 +279,9 @@ impl CodeTheme {
                 });
 
                 let reset_value = if self.dark_mode {
-                    CodeTheme::dark()
+                    Self::dark()
                 } else {
-                    CodeTheme::light()
+                    Self::light()
                 };
 
                 if ui

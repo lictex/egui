@@ -1,7 +1,7 @@
 use std::{fmt::Debug, ops::RangeInclusive, sync::Arc};
 
 use egui::emath::{remap_clamp, round_to_decimals, Pos2, Rect};
-use egui::epaint::{Shape, Stroke, TextShape};
+use egui::epaint::{Shape, TextShape};
 
 use crate::{Response, Sense, TextStyle, Ui, WidgetText};
 
@@ -57,8 +57,8 @@ impl From<HPlacement> for Placement {
     #[inline]
     fn from(placement: HPlacement) -> Self {
         match placement {
-            HPlacement::Left => Placement::LeftBottom,
-            HPlacement::Right => Placement::RightTop,
+            HPlacement::Left => Self::LeftBottom,
+            HPlacement::Right => Self::RightTop,
         }
     }
 }
@@ -67,8 +67,8 @@ impl From<VPlacement> for Placement {
     #[inline]
     fn from(placement: VPlacement) -> Self {
         match placement {
-            VPlacement::Top => Placement::RightTop,
-            VPlacement::Bottom => Placement::LeftBottom,
+            VPlacement::Top => Self::RightTop,
+            VPlacement::Bottom => Self::LeftBottom,
         }
     }
 }
@@ -247,14 +247,9 @@ impl AxisWidget {
                     }
                 },
             };
-            let shape = TextShape {
-                pos: text_pos,
-                galley: galley.galley,
-                underline: Stroke::NONE,
-                override_text_color: Some(text_color),
-                angle,
-            };
-            ui.painter().add(shape);
+
+            ui.painter()
+                .add(TextShape::new(text_pos, galley, text_color).with_angle(angle));
 
             // --- add ticks ---
             let font_id = TextStyle::Body.resolve(ui.style());
@@ -311,7 +306,8 @@ impl AxisWidget {
                         }
                     };
 
-                    ui.painter().add(Shape::galley(text_pos, galley));
+                    ui.painter()
+                        .add(Shape::galley(text_pos, galley, text_color));
                 }
             }
         }

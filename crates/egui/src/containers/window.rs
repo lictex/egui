@@ -1,7 +1,9 @@
 // WARNING: the code in here is horrible. It is a behemoth that needs breaking up into simpler parts.
 
+use std::sync::Arc;
+
 use crate::collapsing_header::CollapsingState;
-use crate::{widget_text::WidgetTextGalley, *};
+use crate::*;
 use epaint::*;
 
 use super::*;
@@ -46,7 +48,9 @@ impl<'open> Window<'open> {
     /// If you need a changing title, you must call `window.id(…)` with a fixed id.
     pub fn new(title: impl Into<WidgetText>) -> Self {
         let title = title.into().fallback_text_style(TextStyle::Heading);
-        let area = Area::new(Id::new(title.text())).constrain(true);
+        let area = Area::new(Id::new(title.text()))
+            .constrain(true)
+            .edges_padded_for_resize(true);
         Self {
             title,
             open: None,
@@ -115,6 +119,9 @@ impl<'open> Window<'open> {
     #[inline]
     pub fn resize(mut self, mutate: impl Fn(Resize) -> Resize) -> Self {
         self.resize = mutate(self.resize);
+        self.area = self
+            .area
+            .edges_padded_for_resize(self.resize.is_resizable());
         self
     }
 
@@ -271,6 +278,7 @@ impl<'open> Window<'open> {
     #[inline]
     pub fn fixed_size(mut self, size: impl Into<Vec2>) -> Self {
         self.resize = self.resize.fixed_size(size);
+        self.area = self.area.edges_padded_for_resize(false);
         self
     }
 
@@ -292,6 +300,7 @@ impl<'open> Window<'open> {
     #[inline]
     pub fn resizable(mut self, resizable: bool) -> Self {
         self.resize = self.resize.resizable(resizable);
+        self.area = self.area.edges_padded_for_resize(resizable);
         self
     }
 
@@ -317,6 +326,7 @@ impl<'open> Window<'open> {
     pub fn auto_sized(mut self) -> Self {
         self.resize = self.resize.auto_sized();
         self.scroll = ScrollArea::neither();
+        self.area = self.area.edges_padded_for_resize(false);
         self
     }
 
@@ -403,9 +413,18 @@ impl<'open> Window<'open> {
         let resize = resize.resizable(false); // We move it manually
         let mut resize = resize.id(resize_id);
 
+        let on_top = Some(area_layer_id) == ctx.top_layer_id();
         let mut area = area.begin(ctx);
 
         let title_content_spacing = 2.0 * ctx.style().spacing.item_spacing.y;
+
+        // Calculate roughly how much larger the window size is compared to the inner rect
+        let title_bar_height = if with_title_bar {
+            let style = ctx.style();
+            ctx.fonts(|f| title.font_height(f, &style)) + title_content_spacing * 2.0
+        } else {
+            0.0
+        };
 
         // First interact (move etc) to avoid frame delay:
         let last_frame_outer_rect = area.state().rect();
@@ -418,13 +437,6 @@ impl<'open> Window<'open> {
                 last_frame_outer_rect,
             )
             .and_then(|window_interaction| {
-                // Calculate roughly how much larger the window size is compared to the inner rect
-                let title_bar_height = if with_title_bar {
-                    let style = ctx.style();
-                    ctx.fonts(|f| title.font_height(f, &style)) + title_content_spacing
-                } else {
-                    0.0
-                };
                 let margins = frame.outer_margin.sum()
                     + frame.inner_margin.sum()
                     + vec2(0.0, title_bar_height);
@@ -451,6 +463,9 @@ impl<'open> Window<'open> {
             let mut frame = frame.begin(&mut area_content_ui);
 
             let show_close_button = open.is_some();
+
+            let where_to_put_header_background = &area_content_ui.painter().add(Shape::Noop);
+
             let title_bar = if with_title_bar {
                 let title_bar = show_title_bar(
                     &mut frame.content_ui,
@@ -487,6 +502,27 @@ impl<'open> Window<'open> {
             // END FRAME --------------------------------
 
             if let Some(title_bar) = title_bar {
+                if on_top && area_content_ui.visuals().window_highlight_topmost {
+                    let rect = Rect::from_min_size(
+                        outer_rect.min,
+                        Vec2 {
+                            x: outer_rect.size().x,
+                            y: title_bar_height,
+                        },
+                    );
+                    let mut round = area_content_ui.visuals().window_rounding;
+                    if !is_collapsed {
+                        round.se = 0.0;
+                        round.sw = 0.0;
+                    }
+                    let header_color = area_content_ui.visuals().widgets.open.weak_bg_fill;
+
+                    area_content_ui.painter().set(
+                        *where_to_put_header_background,
+                        RectShape::filled(rect, round, header_color),
+                    );
+                };
+
                 title_bar.ui(
                     &mut area_content_ui,
                     outer_rect,
@@ -885,7 +921,7 @@ struct TitleBar {
     id: Id,
 
     /// Prepared text in the title
-    title_galley: WidgetTextGalley,
+    title_galley: Arc<Galley>,
 
     /// Size of the title bar in a collapsed state (if window is collapsible),
     /// which includes all necessary space for showing the expand button, the
@@ -984,11 +1020,11 @@ impl TitleBar {
         let full_top_rect = Rect::from_x_y_ranges(self.rect.x_range(), self.min_rect.y_range());
         let text_pos =
             emath::align::center_size_in_rect(self.title_galley.size(), full_top_rect).left_top();
-        let text_pos = text_pos - self.title_galley.galley().rect.min.to_vec2();
+        let text_pos = text_pos - self.title_galley.rect.min.to_vec2();
         let text_pos = text_pos - 1.5 * Vec2::Y; // HACK: center on x-height of text (looks better)
-        self.title_galley.paint_with_fallback_color(
-            ui.painter(),
+        ui.painter().galley(
             text_pos,
+            self.title_galley.clone(),
             ui.visuals().text_color(),
         );
 

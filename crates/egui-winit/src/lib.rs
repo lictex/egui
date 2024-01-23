@@ -22,7 +22,7 @@ mod window_settings;
 
 pub use window_settings::WindowSettings;
 
-use raw_window_handle::HasRawDisplayHandle;
+use raw_window_handle::HasDisplayHandle;
 
 #[allow(unused_imports)]
 pub(crate) use profiling_scopes::*;
@@ -109,7 +109,7 @@ impl State {
     pub fn new(
         egui_ctx: egui::Context,
         viewport_id: ViewportId,
-        display_target: &dyn HasRawDisplayHandle,
+        display_target: &dyn HasDisplayHandle,
         native_pixels_per_point: Option<f32>,
         max_texture_side: Option<usize>,
     ) -> Self {
@@ -129,7 +129,9 @@ impl State {
             any_pointer_button_down: false,
             current_cursor_icon: None,
 
-            clipboard: clipboard::Clipboard::new(display_target),
+            clipboard: clipboard::Clipboard::new(
+                display_target.display_handle().ok().map(|h| h.as_raw()),
+            ),
 
             simulate_touch_screen: false,
             pointer_touch_id: None,
@@ -242,6 +244,11 @@ impl State {
     ) -> EventResponse {
         crate::profile_function!(short_window_event_description(event));
 
+        #[cfg(feature = "accesskit")]
+        if let Some(accesskit) = &self.accesskit {
+            accesskit.process_event(window, event);
+        }
+
         use winit::event::WindowEvent;
         match event {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -342,9 +349,10 @@ impl State {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                self.on_keyboard_input(event);
+
                 // When pressing the Tab key, egui focuses the first focusable element, hence Tab always consumes.
-                let consumed = self.on_keyboard_input(event)
-                    || self.egui_ctx.wants_keyboard_input()
+                let consumed = self.egui_ctx.wants_keyboard_input()
                     || event.logical_key
                         == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab);
                 EventResponse {
@@ -737,7 +745,7 @@ impl State {
         }
     }
 
-    fn on_keyboard_input(&mut self, event: &winit::event::KeyEvent) -> bool {
+    fn on_keyboard_input(&mut self, event: &winit::event::KeyEvent) {
         let winit::event::KeyEvent {
             // Represents the position of a key independent of the currently active layout.
             //
@@ -773,16 +781,23 @@ impl State {
 
         let logical_key = key_from_winit_key(logical_key);
 
+        // Helpful logging to enable when adding new key support
+        log::trace!(
+            "logical {:?} -> {:?},  physical {:?} -> {:?}",
+            event.logical_key,
+            logical_key,
+            event.physical_key,
+            physical_key
+        );
+
         if let Some(logical_key) = logical_key {
             if pressed {
-                // KeyCode::Paste etc in winit are broken/untrustworthy,
-                // so we detect these things manually:
                 if is_cut_command(self.egui_input.modifiers, logical_key) {
                     self.egui_input.events.push(egui::Event::Cut);
-                    return true;
+                    return;
                 } else if is_copy_command(self.egui_input.modifiers, logical_key) {
                     self.egui_input.events.push(egui::Event::Copy);
-                    return true;
+                    return;
                 } else if is_paste_command(self.egui_input.modifiers, logical_key) {
                     if let Some(contents) = self.clipboard.get() {
                         let contents = contents.replace("\r\n", "\n");
@@ -790,7 +805,7 @@ impl State {
                             self.egui_input.events.push(egui::Event::Paste(contents));
                         }
                     }
-                    return true;
+                    return;
                 }
             }
 
@@ -821,8 +836,6 @@ impl State {
                 }
             }
         }
-
-        false
     }
 
     /// Call with the output given by `egui`.
@@ -996,12 +1009,12 @@ pub fn update_viewport_info(
     viewport_info.outer_rect = outer_rect;
     viewport_info.title = Some(window.title());
 
-    if false {
+    if cfg!(target_os = "windows") {
         // It's tempting to do this, but it leads to a deadlock on Mac when running
         // `cargo run -p custom_window_frame`.
         // See https://github.com/emilk/egui/issues/3494
         viewport_info.maximized = Some(window.is_maximized());
-        viewport_info.minimized = window.is_minimized().or(viewport_info.minimized);
+        viewport_info.minimized = Some(window.is_minimized().unwrap_or(false));
     }
 }
 
@@ -1030,17 +1043,20 @@ fn is_printable_char(chr: char) -> bool {
 }
 
 fn is_cut_command(modifiers: egui::Modifiers, keycode: egui::Key) -> bool {
-    (modifiers.command && keycode == egui::Key::X)
+    keycode == egui::Key::Cut
+        || (modifiers.command && keycode == egui::Key::X)
         || (cfg!(target_os = "windows") && modifiers.shift && keycode == egui::Key::Delete)
 }
 
 fn is_copy_command(modifiers: egui::Modifiers, keycode: egui::Key) -> bool {
-    (modifiers.command && keycode == egui::Key::C)
+    keycode == egui::Key::Copy
+        || (modifiers.command && keycode == egui::Key::C)
         || (cfg!(target_os = "windows") && modifiers.ctrl && keycode == egui::Key::Insert)
 }
 
 fn is_paste_command(modifiers: egui::Modifiers, keycode: egui::Key) -> bool {
-    (modifiers.command && keycode == egui::Key::V)
+    keycode == egui::Key::Paste
+        || (modifiers.command && keycode == egui::Key::V)
         || (cfg!(target_os = "windows") && modifiers.shift && keycode == egui::Key::Insert)
 }
 
@@ -1067,47 +1083,52 @@ fn key_from_named_key(named_key: winit::keyboard::NamedKey) -> Option<egui::Key>
     use egui::Key;
     use winit::keyboard::NamedKey;
 
-    match named_key {
-        NamedKey::Enter => Some(Key::Enter),
-        NamedKey::Tab => Some(Key::Tab),
-        NamedKey::Space => Some(Key::Space),
-        NamedKey::ArrowDown => Some(Key::ArrowDown),
-        NamedKey::ArrowLeft => Some(Key::ArrowLeft),
-        NamedKey::ArrowRight => Some(Key::ArrowRight),
-        NamedKey::ArrowUp => Some(Key::ArrowUp),
-        NamedKey::End => Some(Key::End),
-        NamedKey::Home => Some(Key::Home),
-        NamedKey::PageDown => Some(Key::PageDown),
-        NamedKey::PageUp => Some(Key::PageUp),
-        NamedKey::Backspace => Some(Key::Backspace),
-        NamedKey::Delete => Some(Key::Delete),
-        NamedKey::Insert => Some(Key::Insert),
-        NamedKey::Escape => Some(Key::Escape),
-        NamedKey::F1 => Some(Key::F1),
-        NamedKey::F2 => Some(Key::F2),
-        NamedKey::F3 => Some(Key::F3),
-        NamedKey::F4 => Some(Key::F4),
-        NamedKey::F5 => Some(Key::F5),
-        NamedKey::F6 => Some(Key::F6),
-        NamedKey::F7 => Some(Key::F7),
-        NamedKey::F8 => Some(Key::F8),
-        NamedKey::F9 => Some(Key::F9),
-        NamedKey::F10 => Some(Key::F10),
-        NamedKey::F11 => Some(Key::F11),
-        NamedKey::F12 => Some(Key::F12),
-        NamedKey::F13 => Some(Key::F13),
-        NamedKey::F14 => Some(Key::F14),
-        NamedKey::F15 => Some(Key::F15),
-        NamedKey::F16 => Some(Key::F16),
-        NamedKey::F17 => Some(Key::F17),
-        NamedKey::F18 => Some(Key::F18),
-        NamedKey::F19 => Some(Key::F19),
-        NamedKey::F20 => Some(Key::F20),
+    Some(match named_key {
+        NamedKey::Enter => Key::Enter,
+        NamedKey::Tab => Key::Tab,
+        NamedKey::ArrowDown => Key::ArrowDown,
+        NamedKey::ArrowLeft => Key::ArrowLeft,
+        NamedKey::ArrowRight => Key::ArrowRight,
+        NamedKey::ArrowUp => Key::ArrowUp,
+        NamedKey::End => Key::End,
+        NamedKey::Home => Key::Home,
+        NamedKey::PageDown => Key::PageDown,
+        NamedKey::PageUp => Key::PageUp,
+        NamedKey::Backspace => Key::Backspace,
+        NamedKey::Delete => Key::Delete,
+        NamedKey::Insert => Key::Insert,
+        NamedKey::Escape => Key::Escape,
+        NamedKey::Cut => Key::Cut,
+        NamedKey::Copy => Key::Copy,
+        NamedKey::Paste => Key::Paste,
+
+        NamedKey::Space => Key::Space,
+
+        NamedKey::F1 => Key::F1,
+        NamedKey::F2 => Key::F2,
+        NamedKey::F3 => Key::F3,
+        NamedKey::F4 => Key::F4,
+        NamedKey::F5 => Key::F5,
+        NamedKey::F6 => Key::F6,
+        NamedKey::F7 => Key::F7,
+        NamedKey::F8 => Key::F8,
+        NamedKey::F9 => Key::F9,
+        NamedKey::F10 => Key::F10,
+        NamedKey::F11 => Key::F11,
+        NamedKey::F12 => Key::F12,
+        NamedKey::F13 => Key::F13,
+        NamedKey::F14 => Key::F14,
+        NamedKey::F15 => Key::F15,
+        NamedKey::F16 => Key::F16,
+        NamedKey::F17 => Key::F17,
+        NamedKey::F18 => Key::F18,
+        NamedKey::F19 => Key::F19,
+        NamedKey::F20 => Key::F20,
         _ => {
             log::trace!("Unknown key: {named_key:?}");
-            None
+            return None;
         }
-    }
+    })
 }
 
 fn key_from_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key> {
@@ -1124,7 +1145,6 @@ fn key_from_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key> {
         KeyCode::Tab => Key::Tab,
         KeyCode::Backspace => Key::Backspace,
         KeyCode::Enter | KeyCode::NumpadEnter => Key::Enter,
-        KeyCode::Space => Key::Space,
 
         KeyCode::Insert => Key::Insert,
         KeyCode::Delete => Key::Delete,
@@ -1133,16 +1153,24 @@ fn key_from_key_code(key: winit::keyboard::KeyCode) -> Option<egui::Key> {
         KeyCode::PageUp => Key::PageUp,
         KeyCode::PageDown => Key::PageDown,
 
+        // Punctuation
+        KeyCode::Space => Key::Space,
         KeyCode::Comma => Key::Comma,
         KeyCode::Period => Key::Period,
         // KeyCode::Colon => Key::Colon, // NOTE: there is no physical colon key on an american keyboard
         KeyCode::Semicolon => Key::Semicolon,
+        KeyCode::Backslash => Key::Backslash,
+        KeyCode::Slash | KeyCode::NumpadDivide => Key::Slash,
+        KeyCode::BracketLeft => Key::OpenBracket,
+        KeyCode::BracketRight => Key::CloseBracket,
+        KeyCode::Backquote => Key::Backtick,
 
+        KeyCode::Cut => Key::Cut,
+        KeyCode::Copy => Key::Copy,
+        KeyCode::Paste => Key::Paste,
         KeyCode::Minus | KeyCode::NumpadSubtract => Key::Minus,
-
-        // Using Mac the key with the Plus sign on it is reported as the Equals key
-        // (with both English and Swedish keyboard).
-        KeyCode::Equal | KeyCode::NumpadAdd => Key::PlusEquals,
+        KeyCode::NumpadAdd => Key::Plus,
+        KeyCode::Equal => Key::Equals,
 
         KeyCode::Digit0 | KeyCode::Numpad0 => Key::Num0,
         KeyCode::Digit1 | KeyCode::Numpad1 => Key::Num1,
@@ -1325,6 +1353,7 @@ fn process_viewport_command(
             if let Err(err) = window.drag_resize_window(match direction {
                 egui::viewport::ResizeDirection::North => ResizeDirection::North,
                 egui::viewport::ResizeDirection::South => ResizeDirection::South,
+                egui::viewport::ResizeDirection::East => ResizeDirection::East,
                 egui::viewport::ResizeDirection::West => ResizeDirection::West,
                 egui::viewport::ResizeDirection::NorthEast => ResizeDirection::NorthEast,
                 egui::viewport::ResizeDirection::SouthEast => ResizeDirection::SouthEast,
@@ -1398,10 +1427,8 @@ fn process_viewport_command(
             egui::viewport::WindowLevel::Normal => WindowLevel::Normal,
         }),
         ViewportCommand::Icon(icon) => {
-            window.set_window_icon(icon.map(|icon| {
-                winit::window::Icon::from_rgba(icon.rgba.clone(), icon.width, icon.height)
-                    .expect("Invalid ICON data!")
-            }));
+            let winit_icon = icon.and_then(|icon| to_winit_icon(&icon));
+            window.set_window_icon(winit_icon);
         }
         ViewportCommand::IMERect(rect) => {
             window.set_ime_cursor_area(
@@ -1606,10 +1633,8 @@ pub fn create_winit_window_builder<T>(
     }
 
     if let Some(icon) = icon {
-        window_builder = window_builder.with_window_icon(Some(
-            winit::window::Icon::from_rgba(icon.rgba.clone(), icon.width, icon.height)
-                .expect("Invalid Icon Data!"),
-        ));
+        let winit_icon = to_winit_icon(&icon);
+        window_builder = window_builder.with_window_icon(winit_icon);
     }
 
     #[cfg(all(feature = "wayland", target_os = "linux"))]
@@ -1635,6 +1660,21 @@ pub fn create_winit_window_builder<T>(
     }
 
     window_builder
+}
+
+fn to_winit_icon(icon: &egui::IconData) -> Option<winit::window::Icon> {
+    if icon.is_empty() {
+        None
+    } else {
+        crate::profile_function!();
+        match winit::window::Icon::from_rgba(icon.rgba.clone(), icon.width, icon.height) {
+            Ok(winit_icon) => Some(winit_icon),
+            Err(err) => {
+                log::warn!("Invalid IconData: {err}");
+                None
+            }
+        }
+    }
 }
 
 /// Applies what `create_winit_window_builder` couldn't

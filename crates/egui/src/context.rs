@@ -68,6 +68,28 @@ impl Default for WrappedTextureManager {
 
 /// Repaint-logic
 impl ContextImpl {
+    /// This is where we update the repaint logic.
+    fn begin_frame_repaint_logic(&mut self, viewport_id: ViewportId) {
+        let viewport = self.viewports.entry(viewport_id).or_default();
+
+        viewport.repaint.prev_frame_paint_delay = viewport.repaint.repaint_delay;
+
+        if viewport.repaint.outstanding == 0 {
+            // We are repainting now, so we can wait a while for the next repaint.
+            viewport.repaint.repaint_delay = Duration::MAX;
+        } else {
+            viewport.repaint.repaint_delay = Duration::ZERO;
+            viewport.repaint.outstanding -= 1;
+            if let Some(callback) = &self.request_repaint_callback {
+                (callback)(RequestRepaintInfo {
+                    viewport_id,
+                    delay: Duration::ZERO,
+                    current_frame_nr: viewport.repaint.frame_nr,
+                });
+            }
+        }
+    }
+
     fn request_repaint(&mut self, viewport_id: ViewportId) {
         self.request_repaint_after(Duration::ZERO, viewport_id);
     }
@@ -79,13 +101,13 @@ impl ContextImpl {
         // This solves some corner-cases of missing repaints on frame-delayed responses.
         viewport.repaint.outstanding = 1;
 
-        if let Some(callback) = &self.request_repaint_callback {
-            // We save some CPU time by only calling the callback if we need to.
-            // If the new delay is greater or equal to the previous lowest,
-            // it means we have already called the callback, and don't need to do it again.
-            if delay < viewport.repaint.repaint_delay {
-                viewport.repaint.repaint_delay = delay;
+        // We save some CPU time by only calling the callback if we need to.
+        // If the new delay is greater or equal to the previous lowest,
+        // it means we have already called the callback, and don't need to do it again.
+        if delay < viewport.repaint.repaint_delay {
+            viewport.repaint.repaint_delay = delay;
 
+            if let Some(callback) = &self.request_repaint_callback {
                 (callback)(RequestRepaintInfo {
                     viewport_id,
                     delay,
@@ -96,10 +118,10 @@ impl ContextImpl {
     }
 
     #[must_use]
-    fn requested_repaint_last_frame(&self, viewport_id: &ViewportId) -> bool {
-        self.viewports
-            .get(viewport_id)
-            .map_or(false, |v| v.repaint.requested_last_frame)
+    fn requested_immediate_repaint_prev_frame(&self, viewport_id: &ViewportId) -> bool {
+        self.viewports.get(viewport_id).map_or(false, |v| {
+            v.repaint.requested_immediate_repaint_prev_frame()
+        })
     }
 
     #[must_use]
@@ -111,6 +133,14 @@ impl ContextImpl {
 }
 
 // ----------------------------------------------------------------------------
+
+/// Used to store each widgets [Id], [Rect] and [Sense] each frame.
+/// Used to check for overlaps between widgets when handling events.
+struct WidgetRect {
+    id: Id,
+    rect: Rect,
+    sense: Sense,
+}
 
 /// State stored per viewport
 #[derive(Default)]
@@ -138,10 +168,10 @@ struct ViewportState {
     used: bool,
 
     /// Written to during the frame.
-    layer_rects_this_frame: HashMap<LayerId, Vec<(Id, Rect)>>,
+    layer_rects_this_frame: HashMap<LayerId, Vec<WidgetRect>>,
 
     /// Read
-    layer_rects_prev_frame: HashMap<LayerId, Vec<(Id, Rect)>>,
+    layer_rects_prev_frame: HashMap<LayerId, Vec<WidgetRect>>,
 
     /// State related to repaint scheduling.
     repaint: ViewportRepaintInfo,
@@ -170,8 +200,11 @@ struct ViewportRepaintInfo {
     /// While positive, keep requesting repaints. Decrement at the start of each frame.
     outstanding: u8,
 
-    /// Did we?
-    requested_last_frame: bool,
+    /// What was the output of `repaint_delay` on the previous frame?
+    ///
+    /// If this was zero, we are repaining as quickly as possible
+    /// (as far as we know).
+    prev_frame_paint_delay: Duration,
 }
 
 impl Default for ViewportRepaintInfo {
@@ -185,8 +218,14 @@ impl Default for ViewportRepaintInfo {
             // Let's run a couple of frames at the start, because why not.
             outstanding: 1,
 
-            requested_last_frame: false,
+            prev_frame_paint_delay: Duration::MAX,
         }
+    }
+}
+
+impl ViewportRepaintInfo {
+    pub fn requested_immediate_repaint_prev_frame(&self) -> bool {
+        self.prev_frame_paint_delay == Duration::ZERO
     }
 }
 
@@ -256,22 +295,10 @@ impl ContextImpl {
 
         let is_outermost_viewport = self.viewport_stack.is_empty(); // not necessarily root, just outermost immediate viewport
         self.viewport_stack.push(ids);
-        let viewport = self.viewports.entry(viewport_id).or_default();
 
-        if viewport.repaint.outstanding == 0 {
-            // We are repainting now, so we can wait a while for the next repaint.
-            viewport.repaint.repaint_delay = Duration::MAX;
-        } else {
-            viewport.repaint.repaint_delay = Duration::ZERO;
-            viewport.repaint.outstanding -= 1;
-            if let Some(callback) = &self.request_repaint_callback {
-                (callback)(RequestRepaintInfo {
-                    viewport_id,
-                    delay: Duration::ZERO,
-                    current_frame_nr: viewport.repaint.frame_nr,
-                });
-            }
-        }
+        self.begin_frame_repaint_logic(viewport_id);
+
+        let viewport = self.viewports.entry(viewport_id).or_default();
 
         if is_outermost_viewport {
             if let Some(new_zoom_factor) = self.new_zoom_factor.take() {
@@ -305,7 +332,7 @@ impl ContextImpl {
 
         viewport.input = std::mem::take(&mut viewport.input).begin_frame(
             new_raw_input,
-            viewport.repaint.requested_last_frame,
+            viewport.repaint.requested_immediate_repaint_prev_frame(),
             pixels_per_point,
         );
 
@@ -320,6 +347,7 @@ impl ContextImpl {
                 pivot: Align2::LEFT_TOP,
                 size: screen_rect.size(),
                 interactable: true,
+                edges_padded_for_resize: false,
             },
         );
 
@@ -365,7 +393,7 @@ impl ContextImpl {
             .entry(pixels_per_point.into())
             .or_insert_with(|| {
                 #[cfg(feature = "log")]
-                log::debug!("Creating new Fonts for pixels_per_point={pixels_per_point}");
+                log::trace!("Creating new Fonts for pixels_per_point={pixels_per_point}");
 
                 is_new = true;
                 crate::profile_scope!("Fonts::new");
@@ -511,7 +539,7 @@ impl std::fmt::Debug for Context {
 }
 
 impl std::cmp::PartialEq for Context {
-    fn eq(&self, other: &Context) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
 }
@@ -560,7 +588,7 @@ impl Context {
     /// // handle full_output
     /// ```
     #[must_use]
-    pub fn run(&self, new_input: RawInput, run_ui: impl FnOnce(&Context)) -> FullOutput {
+    pub fn run(&self, new_input: RawInput, run_ui: impl FnOnce(&Self)) -> FullOutput {
         crate::profile_function!();
 
         self.begin_frame(new_input);
@@ -876,21 +904,33 @@ impl Context {
                 let rects = viewport.layer_rects_this_frame.entry(layer_id).or_default();
                 // check for placeholders
                 // if an id already exists, just update it's value
-                if let Some((_, rect)) = rects.iter_mut().find(|(i, _)| *i == id) {
+                if let Some(WidgetRect { rect, .. }) = rects.iter_mut().find(|f| f.id == id) {
                     *rect = interact_rect;
                 } else {
-                    rects.push((id, interact_rect));
+                    rects.push(WidgetRect {
+                        id,
+                        rect: interact_rect,
+                        sense,
+                    });
                 }
 
                 if hovered {
                     let pointer_pos = viewport.input.pointer.interact_pos();
                     if let Some(pointer_pos) = pointer_pos {
                         if let Some(rects) = viewport.layer_rects_prev_frame.get(&layer_id) {
-                            for &(prev_id, prev_rect) in rects.iter().rev() {
+                            for &WidgetRect {
+                                id: prev_id,
+                                rect: prev_rect,
+                                sense: prev_sense,
+                            } in rects.iter().rev()
+                            {
                                 if prev_id == id {
                                     break; // there is no other interactive widget covering us at the pointer position.
                                 }
-                                if prev_rect.contains(pointer_pos) {
+                                // We don't want a click-only button to block drag-events to a `ScrollArea`:
+                                let has_conflicting_sense = (prev_sense.click && sense.click)
+                                    || (prev_sense.drag && sense.drag);
+                                if prev_rect.contains(pointer_pos) && has_conflicting_sense {
                                     // Another interactive widget is covering us at the pointer position,
                                     // so we aren't hovered.
 
@@ -1057,6 +1097,7 @@ impl Context {
                                         clicked && click.is_triple();
                                 }
                             }
+                            response.is_pointer_button_down_on = false;
                         }
                     }
                 }
@@ -1207,11 +1248,13 @@ impl Context {
     /// If this is called at least once in a frame, then there will be another frame right after this.
     /// Call as many times as you wish, only one repaint will be issued.
     ///
+    /// To request repaint with a delay, use [`Self::request_repaint_after`].
+    ///
     /// If called from outside the UI thread, the UI thread will wake up and run,
     /// provided the egui integration has set that up via [`Self::set_request_repaint_callback`]
     /// (this will work on `eframe`).
     ///
-    /// This will repaint the current viewport
+    /// This will repaint the current viewport.
     pub fn request_repaint(&self) {
         self.request_repaint_of(self.viewport_id());
     }
@@ -1221,11 +1264,13 @@ impl Context {
     /// If this is called at least once in a frame, then there will be another frame right after this.
     /// Call as many times as you wish, only one repaint will be issued.
     ///
+    /// To request repaint with a delay, use [`Self::request_repaint_after_for`].
+    ///
     /// If called from outside the UI thread, the UI thread will wake up and run,
     /// provided the egui integration has set that up via [`Self::set_request_repaint_callback`]
     /// (this will work on `eframe`).
     ///
-    /// This will repaint the specified viewport
+    /// This will repaint the specified viewport.
     pub fn request_repaint_of(&self, id: ViewportId) {
         self.write(|ctx| ctx.request_repaint(id));
     }
@@ -1303,7 +1348,7 @@ impl Context {
     /// Was a repaint requested last frame for the given viewport?
     #[must_use]
     pub fn requested_repaint_last_frame_for(&self, viewport_id: &ViewportId) -> bool {
-        self.read(|ctx| ctx.requested_repaint_last_frame(viewport_id))
+        self.read(|ctx| ctx.requested_immediate_repaint_prev_frame(viewport_id))
     }
 
     /// Has a repaint been requested for the current viewport?
@@ -1628,8 +1673,7 @@ impl ContextImpl {
 
         viewport.repaint.frame_nr += 1;
 
-        self.memory
-            .end_frame(&viewport.input, &viewport.frame_state.used_ids);
+        self.memory.end_frame(&viewport.frame_state.used_ids);
 
         if let Some(fonts) = self.fonts.get(&pixels_per_point.into()) {
             let tex_mngr = &mut self.tex_manager.0.write();
@@ -1790,7 +1834,7 @@ impl ContextImpl {
                 true
             } else {
                 #[cfg(feature = "log")]
-                log::debug!(
+                log::trace!(
                     "Freeing Fonts with pixels_per_point={} because it is no longer needed",
                     pixels_per_point.into_inner()
                 );
@@ -2001,6 +2045,11 @@ impl Context {
     /// [`Area`]:s and [`Window`]:s also do this automatically when being clicked on or interacted with.
     pub fn move_to_top(&self, layer_id: LayerId) {
         self.memory_mut(|mem| mem.areas_mut().move_to_top(layer_id));
+    }
+
+    /// Retrieve the [`LayerId`] of the top level windows.
+    pub fn top_layer_id(&self) -> Option<LayerId> {
+        self.memory(|mem| mem.areas().top_layer_id(Order::Middle))
     }
 
     pub(crate) fn rect_contains_pointer(&self, layer_id: LayerId, rect: Rect) -> bool {
@@ -2690,7 +2739,7 @@ impl Context {
     /// * Handle the output from [`Context::run`], including rendering
     #[allow(clippy::unused_self)]
     pub fn set_immediate_viewport_renderer(
-        callback: impl for<'a> Fn(&Context, ImmediateViewport<'a>) + 'static,
+        callback: impl for<'a> Fn(&Self, ImmediateViewport<'a>) + 'static,
     ) {
         let callback = Box::new(callback);
         IMMEDIATE_VIEWPORT_RENDERER.with(|render_sync| {
@@ -2767,7 +2816,7 @@ impl Context {
         &self,
         new_viewport_id: ViewportId,
         viewport_builder: ViewportBuilder,
-        viewport_ui_cb: impl Fn(&Context, ViewportClass) + Send + Sync + 'static,
+        viewport_ui_cb: impl Fn(&Self, ViewportClass) + Send + Sync + 'static,
     ) {
         crate::profile_function!();
 
@@ -2819,7 +2868,7 @@ impl Context {
         &self,
         new_viewport_id: ViewportId,
         builder: ViewportBuilder,
-        viewport_ui_cb: impl FnOnce(&Context, ViewportClass) -> T,
+        viewport_ui_cb: impl FnOnce(&Self, ViewportClass) -> T,
     ) -> T {
         crate::profile_function!();
 
