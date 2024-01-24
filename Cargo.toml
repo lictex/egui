@@ -60,5 +60,5 @@ wgpu = { version = "0.19", features = [
 winit = { version = "0.29.4", default-features = false }
 
 [patch.crates-io]
-winit = { git = "https://github.com/xyning/winit/", rev = "9216720363e8aa8d639508916cac1909a0b3b83d" }
+winit = { git = "https://github.com/xyning/winit/", rev = "20c06ac36b801df0d7bc03e409984b1bbee8ed2d" }
 # sctk-adwaita = { path = "../sctk-adwaita" }
